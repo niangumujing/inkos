@@ -93,6 +93,8 @@ describe("CLI integration", () => {
     it("initializes project in current directory", () => {
       const output = run(["init"]);
       expect(output).toContain("Project initialized");
+      expect(output).not.toContain("Global LLM config detected");
+      expect(output).toContain("inkos config set-global");
     });
 
     it("creates inkos.json with correct structure", async () => {
@@ -591,12 +593,14 @@ describe("CLI integration", () => {
       try {
         const config = JSON.parse(originalConfig);
         config.llm.provider = "openai";
-        config.llm.baseUrl = "http://127.0.0.1:11434/v1";
+        // Avoid the conventional Ollama port: a locally running but unhealthy
+        // service can hold this integration test open until the CLI timeout.
+        config.llm.baseUrl = "http://127.0.0.1:9/v1";
         config.llm.model = "gpt-oss:20b";
         await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
         await writeFile(envPath, [
           "INKOS_LLM_PROVIDER=openai",
-          "INKOS_LLM_BASE_URL=http://127.0.0.1:11434/v1",
+          "INKOS_LLM_BASE_URL=http://127.0.0.1:9/v1",
           "INKOS_LLM_MODEL=gpt-oss:20b",
           "",
         ].join("\n"), "utf-8");
@@ -780,6 +784,50 @@ describe("CLI integration", () => {
       const next = await state.getNextChapterNumber(bookId);
       expect(next).toBe(2);
       await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("State at ch1");
+    });
+
+    it("keeps an empty index when rewrite 1 removes all existing chapters", async () => {
+      const state = new StateManager(projectDir);
+      const bookId = "rewrite-first-cli";
+      const bookDir = join(projectDir, "books", bookId);
+      const storyDir = join(bookDir, "story");
+      const chaptersDir = join(bookDir, "chapters");
+
+      await mkdir(chaptersDir, { recursive: true });
+      await mkdir(storyDir, { recursive: true });
+      await writeFile(
+        join(bookDir, "book.json"),
+        JSON.stringify({
+          id: bookId,
+          title: "Rewrite First CLI",
+          platform: "other",
+          genre: "other",
+          status: "active",
+          targetChapters: 10,
+          chapterWordCount: 2200,
+          createdAt: "2026-03-22T00:00:00.000Z",
+          updatedAt: "2026-03-22T00:00:00.000Z",
+        }, null, 2),
+        "utf-8",
+      );
+      await writeFile(join(storyDir, "current_state.md"), "State at ch0", "utf-8");
+      await writeFile(join(storyDir, "pending_hooks.md"), "Hooks at ch0", "utf-8");
+      await writeFile(join(chaptersDir, "0001_ch1.md"), "# Chapter 1\n\nContent 1", "utf-8");
+      await writeFile(join(chaptersDir, "0002_ch2.md"), "# Chapter 2\n\nContent 2", "utf-8");
+      await writeFile(join(chaptersDir, "index.json"), JSON.stringify([
+        { number: 1, title: "Ch1", status: "approved", wordCount: 100, createdAt: "", updatedAt: "", auditIssues: [], lengthWarnings: [] },
+        { number: 2, title: "Ch2", status: "approved", wordCount: 100, createdAt: "", updatedAt: "", auditIssues: [], lengthWarnings: [] },
+      ], null, 2), "utf-8");
+      await state.snapshotState(bookId, 0);
+
+      const { exitCode, stdout, stderr } = runStderr(["write", "rewrite", bookId, "1", "--force"], {
+        env: failingLlmEnv,
+      });
+
+      expect(exitCode).not.toBe(0);
+      expect(`${stdout}\n${stderr}`).toContain("Regenerating chapter 1");
+      await expect(state.loadChapterIndex(bookId)).resolves.toEqual([]);
+      expect(await state.getNextChapterNumber(bookId)).toBe(1);
     });
   });
 
