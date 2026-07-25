@@ -575,6 +575,13 @@ describe("ContinuityAuditor", () => {
     expect(issues[0]).toMatchObject({ severity: "warning", category: "伏笔检查" });
   });
 
+  it("drops speculative memo-ban variant claims", () => {
+    const auditor = new ContinuityAuditor({ client: { provider: "openai", apiFormat: "chat", stream: false, defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} } }, model: "test-model", projectRoot: "/tmp/inkos-auditor-memo-variant-test" });
+    const memo = { chapter: 3, goal: "赴约", isGoldenOpening: false, body: "## 不要做\n不要出现任何‘他忽然想起’式闪回。", threadRefs: [] };
+    const issues = (auditor as any).sanitizeModelAuditIssues([{ severity: "critical", category: "章节备忘偏离", description: "正文出现‘他忽然想起’式闪回变体，实质是用感官残留包装回忆。", suggestion: "删除。" }], memo, "zh");
+    expect(issues).toEqual([]);
+  });
+
   it("drops model explicit-ban claims unsupported by deterministic memo bans", () => {
     const auditor = new ContinuityAuditor({ client: { provider: "openai", apiFormat: "chat", stream: false, defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} } }, model: "test-model", projectRoot: "/tmp/inkos-auditor-explicit-ban-test" });
     const memo = { chapter: 1, goal: "修复录音", isGoldenOpening: true, body: "## 不要做\n不要出现手机短信（她用座机查电话，拨号音真实）。", threadRefs: [] };

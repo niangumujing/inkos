@@ -859,6 +859,10 @@ ${chapterContent}${contractChecklistBlock}`;
   ): boolean {
     if (!chapterMemo) return false;
     const text = issue.description;
+    // A model may expand a literal memo ban into speculative “variants” or
+    // claim that sensory residue is "essentially" a forbidden flashback.
+    // Those semantic analogies are advisory, not deterministic contract drift.
+    if (/(?:变体|实质是|包装|equivalent to|variant of)/iu.test(text)) return true;
     const referencesMemo = /(?:章节备忘|备忘录|memo|chapter memo)/iu.test(text);
     const memoDriftCategory = /(?:章节备忘偏离|chapter memo drift)/iu.test(issue.category);
     if (!referencesMemo && !memoDriftCategory) return false;
