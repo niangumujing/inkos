@@ -555,6 +555,19 @@ describe("ContinuityAuditor", () => {
     expect(issues[0]?.description).toContain("mV×1");
   });
 
+  it("downgrades model-only OOC and hook criticals without persisted user evidence", () => {
+    const auditor = new ContinuityAuditor({ client: { provider: "openai", apiFormat: "chat", stream: false, defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} } }, model: "test-model", projectRoot: "/tmp/inkos-auditor-model-critical-boundary-test" });
+    const memo = { chapter: 1, goal: "修复录音", isGoldenOpening: true, body: "## 当前任务\n修复录音。\n\n## 不要做\n不要提前解释真相。", threadRefs: [] };
+    const issues = (auditor as any).sanitizeModelAuditIssues([
+      { severity: "critical", category: "OOC检查", description: "角色违反了模型推断的OA工单规则。", suggestion: "改写。" },
+      { severity: "critical", category: "伏笔检查", description: "必须逐字写出模型推断的格式。", suggestion: "补写。" },
+    ], memo, "zh");
+    expect(issues).toEqual([
+      expect.objectContaining({ severity: "warning", category: "OOC检查" }),
+      expect.objectContaining({ severity: "warning", category: "伏笔检查" }),
+    ]);
+  });
+
   it("drops model explicit-ban claims unsupported by deterministic memo bans", () => {
     const auditor = new ContinuityAuditor({ client: { provider: "openai", apiFormat: "chat", stream: false, defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} } }, model: "test-model", projectRoot: "/tmp/inkos-auditor-explicit-ban-test" });
     const memo = { chapter: 1, goal: "修复录音", isGoldenOpening: true, body: "## 不要做\n不要出现手机短信（她用座机查电话，拨号音真实）。", threadRefs: [] };

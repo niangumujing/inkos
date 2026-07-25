@@ -810,6 +810,7 @@ ${chapterContent}${contractChecklistBlock}`;
     return issues
       .filter((issue) => !this.isUnsupportedMemoClaim(issue, chapterMemo))
       .filter((issue) => !this.isUnsupportedExplicitBanClaim(issue, forbiddenTerms))
+      .map((issue) => this.boundModelOnlyCriticalIssue(issue, chapterMemo))
       .map((issue) => {
         const suggestionHasForbiddenTerm = forbiddenTerms.some(
           (term) => this.countForbiddenTerm(issue.suggestion, term) > 0,
@@ -823,6 +824,25 @@ ${chapterContent}${contractChecklistBlock}`;
             : "仅依据正文中已经出现的可观察事实修复，不引入章节备忘明确禁止的术语、器材或单位。",
         };
       });
+  }
+
+  private boundModelOnlyCriticalIssue(
+    issue: AuditIssue,
+    chapterMemo: ChapterMemo | undefined,
+  ): AuditIssue {
+    if (issue.severity !== "critical") return issue;
+    if (!/(?:OOC|伏笔检查|hook check|character consistency)/iu.test(issue.category)) return issue;
+    const persistedUserContext = chapterMemo
+      ? this.extractPersistedChapterContext(chapterMemo.body)
+      : undefined;
+    if (persistedUserContext) return issue;
+
+    // OOC/hook verdicts produced only by the model are useful review signals,
+    // but they are not deterministic contract failures. Models frequently
+    // invent SOPs, chronology facts, or exact-literal payoff requirements.
+    // Keep the issue visible without allowing unsupported claims to block the
+    // chapter; deterministic memo/post-write validators remain authoritative.
+    return { ...issue, severity: "warning" };
   }
 
   private isUnsupportedExplicitBanClaim(
