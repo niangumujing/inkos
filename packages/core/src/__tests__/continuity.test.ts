@@ -555,6 +555,13 @@ describe("ContinuityAuditor", () => {
     expect(issues[0]?.description).toContain("mV×1");
   });
 
+  it("drops model explicit-ban claims unsupported by deterministic memo bans", () => {
+    const auditor = new ContinuityAuditor({ client: { provider: "openai", apiFormat: "chat", stream: false, defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} } }, model: "test-model", projectRoot: "/tmp/inkos-auditor-explicit-ban-test" });
+    const memo = { chapter: 1, goal: "修复录音", isGoldenOpening: true, body: "## 不要做\n不要出现手机短信（她用座机查电话，拨号音真实）。", threadRefs: [] };
+    const issues = (auditor as any).sanitizeModelAuditIssues([{ severity: "critical", category: "章节备忘偏离", description: "正文直接违反 chapter_memo 中明确禁止的措辞：'拨号音真实'。", suggestion: "删除。" }], memo, "zh");
+    expect(issues).toEqual([]);
+  });
+
   it("drops unsupported memo requirement claims and neutralizes forbidden suggestions", () => {
     const auditor = new ContinuityAuditor({
       client: {
