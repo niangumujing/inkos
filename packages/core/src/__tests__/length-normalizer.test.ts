@@ -408,6 +408,8 @@ describe("LengthNormalizerAgent", () => {
     const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content?: string }> | undefined;
     const userPrompt = messages?.map((message) => message.content ?? "").join("\n") ?? "";
     expect(userPrompt).toContain("Safe Expansion Fallback");
+    expect(userPrompt).toContain("Soft Range 下限 190");
+    expect(userPrompt).toContain("Hard Range 下限 160");
     expect(userPrompt).toContain("只增加已有场景中的对白、动作、空间过渡");
   });
 
