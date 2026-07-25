@@ -500,6 +500,23 @@ describe("LengthNormalizerAgent", () => {
     expect(result.warning).toContain("forbidden term OD remains in output");
   });
 
+  it("does not treat a single-character explanation subject as a literal ban", async () => {
+    const agent = createAgent();
+    const draft = "第七道刻痕仍可测量。".repeat(12);
+    const expanded = "第七道刻痕仍可测量，顾临川只记录位置和触感。".repeat(12);
+    vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({ content: expanded, usage: ZERO_USAGE });
+    const lengthSpec = LengthSpecSchema.parse({ target: 220, softMin: 190, softMax: 250, hardMin: 160, hardMax: 320, countingMode: "zh_chars", normalizeMode: "expand" });
+
+    const result = await agent.normalizeChapter({
+      chapterContent: draft,
+      lengthSpec,
+      chapterIntent: "不要解释‘七’的象征意义，只记录可测量现象。",
+    });
+
+    expect(result.normalizedContent).toBe(expanded);
+    expect(result.warning).not.toContain("forbidden term 七");
+  });
+
   it("rejects numeric-token overflow instead of accepting a polluted expansion", async () => {
     const agent = createAgent();
     const draft = "原始正文保持在安全范围内。".repeat(20);

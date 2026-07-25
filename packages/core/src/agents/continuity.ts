@@ -764,6 +764,9 @@ ${chapterContent}${contractChecklistBlock}`;
 
     for (const line of section.split("\n")) {
       const rule = line.replace(/^[-*]\s*/, "").trim();
+      if (/(?:不要|不得|禁止|禁用|do not|must not)\s*(?:解释|推断|猜测|interpret|explain|infer)/iu.test(rule)) {
+        continue;
+      }
       const hasExplicitBanAction = /(?:不要|不得|禁止|禁用|do not|must not).*(?:出现|使用|提及|写出|称为|叫作?|引入|加入|添加|use|mention|name|call|describe|introduce)/iu.test(rule);
       const hasDirectBanList = /(?:不要|不得|禁止|禁用|do not|must not)\s*[^。.!！？?；;\n]{2,}(?:、|,\s*|，\s*(?!只|允许|可以|应|必须))/iu.test(rule);
       if (!hasExplicitBanAction && !hasDirectBanList) continue;

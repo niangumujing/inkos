@@ -511,6 +511,16 @@ describe("ContinuityAuditor", () => {
     expect(issues).toEqual([]);
   });
 
+  it("does not extract parenthetical rationale from an explanation ban", () => {
+    const auditor = new ContinuityAuditor({ client: { provider: "openai", apiFormat: "chat", stream: false, defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} } }, model: "test-model", projectRoot: "/tmp/inkos-auditor-explanation-rationale-test" });
+    const issues = (auditor as any).detectLiteralMemoContractViolations(
+      "## 不要做\n不要解释‘七’的象征意义（数字本身不重要，重要的是它可测量、可移交、可对抗误差）。",
+      "这条记录可测量，也可移交复核。",
+      "zh",
+    );
+    expect(issues).toEqual([]);
+  });
+
   it("does not treat an allowed naming clause as a literal ban", () => {
     const contractAuditor = new ContinuityAuditor({
       client: {
