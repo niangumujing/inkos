@@ -22,6 +22,37 @@ export interface NormalizeLengthOutput {
   };
 }
 
+interface NormalizerConstraintPolicy {
+  readonly forbiddenTerms: readonly string[];
+  readonly maxNumericTokens?: number;
+  readonly maxAddedNumericTokens?: number;
+  readonly forbidUnobservablePrecision: boolean;
+}
+
+const NEGATIVE_CONSTRAINT_RE = /(?:禁止|不得|不要|避免|不使用|不出现|must not|do not|forbidden)/i;
+const NUMERIC_LIMIT_PATTERNS = [
+  /(?:数字(?:\s*(?:token|tokens|标记|数量))?|numeric\s+tokens?)[^\n。；;]{0,24}(?:不超过|最多|至多|少于或等于|<=|at most)\s*(\d+)/i,
+  /(?:最多|至多)\s*(\d+)\s*个?\s*(?:数字|numeric\s+tokens?)/i,
+];
+const KNOWN_FORBIDDEN_TERMS = [
+  "红外热像仪",
+  "气压计",
+  "光谱仪",
+  "显微镜",
+  "统计模型",
+  "量角器",
+  "折射率",
+  "mV",
+  "nm",
+  "Hz",
+  "R²",
+  "p值",
+  "OD",
+];
+const UNOBSERVABLE_PRECISION_RE = /(?:\d+\.\d+\s*(?:°|度|mV|nm|Hz|N|℃|K|%|mm|cm|秒|s)|精度|误差|公差|分辨率|浓度|频率|折射率|仅仪器可测|肉眼不可见|不可观测精度)/giu;
+const NUMERIC_TOKEN_RE = /\d+(?:\.\d+)?/g;
+const MAX_ADDED_NUMERIC_TOKENS_WITHOUT_EXPLICIT_LIMIT = 12;
+
 export class LengthNormalizerAgent extends BaseAgent {
   get name(): string {
     return "length-normalizer";
@@ -55,15 +86,24 @@ export class LengthNormalizerAgent extends BaseAgent {
     );
 
     const sanitizedContent = this.sanitizeNormalizedContent(response.content, input.chapterContent);
+    const constraintViolation = this.findConstraintViolation(
+      sanitizedContent,
+      input.chapterContent,
+      this.buildConstraintPolicy(input),
+    );
     const sanitizedCount = countChapterLength(sanitizedContent, input.lengthSpec.countingMode);
     const wasTruncated = sanitizedContent !== input.chapterContent
       && sanitizedCount < input.lengthSpec.hardMin
       && this.looksTruncated(sanitizedContent);
     const crossedHardRange = sanitizedContent !== input.chapterContent
       && this.crossesOppositeHardBound(originalCount, sanitizedCount, input.lengthSpec);
-    const normalizedContent = (wasTruncated || crossedHardRange) ? input.chapterContent : sanitizedContent;
+    const normalizedContent = (constraintViolation || wasTruncated || crossedHardRange)
+      ? input.chapterContent
+      : sanitizedContent;
     const finalCount = countChapterLength(normalizedContent, input.lengthSpec.countingMode);
-    const warning = wasTruncated
+    const warning = constraintViolation
+      ? `Length normalizer output violated user constraints; kept original chapter (${constraintViolation}).`
+      : wasTruncated
       ? "Length normalizer output appeared truncated; kept original chapter."
       : crossedHardRange
         ? "Length normalizer output crossed the hard range; kept original chapter."
@@ -89,6 +129,7 @@ export class LengthNormalizerAgent extends BaseAgent {
 修正目标：
 - ${action} 章节长度到给定目标区间
 - 保留章节原有事实、关键钩子、角色名和必须保留的标记
+- 用户提供的章节约束是硬约束；不得以扩写、压缩或长度目标为理由放宽、改写或反向解释
 - 不要引入新的支线、未来揭示或额外总结
 - 不要在正文外输出任何解释`;
   }
@@ -119,6 +160,8 @@ ${originalCount}
 ## Correction Rules
 - 只修正一次，不要递归
 - 保留正文中的关键标记、人物名、地点名和已有事实
+- 严格执行用户原始约束；禁止项、数字上限和可观测性边界优先于长度目标
+- 如果无法同时满足长度目标和用户约束，宁可保持原文，不要补造禁用术语、过密数字或不可观测精度
 - 不要凭空新增子情节
 - 不要插入解释性总结或分析
 - 输出修正后的完整正文，不要加标签
@@ -126,6 +169,108 @@ ${originalCount}
 ${intentBlock}${controlBlock}
 ## Chapter Content
 ${input.chapterContent}`;
+  }
+
+  private buildConstraintPolicy(input: NormalizeLengthInput): NormalizerConstraintPolicy {
+    const constraintText = [input.chapterIntent, input.reducedControlBlock]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join("\n");
+    if (!constraintText) {
+      return {
+        forbiddenTerms: [],
+        forbidUnobservablePrecision: false,
+      };
+    }
+
+    const forbiddenTerms = new Set<string>();
+    for (const line of constraintText.split(/\r?\n/)) {
+      if (!NEGATIVE_CONSTRAINT_RE.test(line)) continue;
+
+      for (const quoted of line.matchAll(/[“”「」『』‘’'`"]([^“”「」『』‘’'`"]+)[“”「」『』‘’'`"]?/g)) {
+        const term = quoted[1]?.trim();
+        if (term && term.length <= 24) forbiddenTerms.add(this.normalizeForbiddenTerm(term));
+      }
+
+      for (const knownTerm of KNOWN_FORBIDDEN_TERMS) {
+        if (new RegExp(this.escapeRegExp(knownTerm), "iu").test(line)) {
+          forbiddenTerms.add(this.normalizeForbiddenTerm(knownTerm));
+        }
+      }
+    }
+
+    const explicitLimit = NUMERIC_LIMIT_PATTERNS
+      .map((pattern) => pattern.exec(constraintText))
+      .find((match) => match?.[1]);
+    const hasNumericDensityRule = /过密数值|过多数字|数字堆砌|少量(?:可由|能由)?[^\n。；;]{0,12}数据/i.test(constraintText);
+    const forbidUnobservablePrecision = /(?:不可观测|肉眼无法|仅仪器可测|没有任何测量仪器|无测量仪器)[^\n。；;]{0,24}(?:精度|数据|数值|测量)|(?:精度|数据|数值|测量)[^\n。；;]{0,24}(?:不可观测|肉眼无法|仅仪器可测)/i.test(constraintText);
+
+    return {
+      forbiddenTerms: [...forbiddenTerms].filter(Boolean),
+      maxNumericTokens: explicitLimit ? Number(explicitLimit[1]) : undefined,
+      maxAddedNumericTokens: explicitLimit || hasNumericDensityRule || forbidUnobservablePrecision
+        ? MAX_ADDED_NUMERIC_TOKENS_WITHOUT_EXPLICIT_LIMIT
+        : undefined,
+      forbidUnobservablePrecision,
+    };
+  }
+
+  private findConstraintViolation(
+    candidate: string,
+    original: string,
+    policy: NormalizerConstraintPolicy,
+  ): string | undefined {
+    for (const term of policy.forbiddenTerms) {
+      if (this.countTerm(candidate, term) > this.countTerm(original, term)) {
+        return `forbidden term ${term}`;
+      }
+    }
+
+    const candidateNumericTokens = this.countNumericTokens(candidate);
+    if (policy.maxNumericTokens !== undefined && candidateNumericTokens > policy.maxNumericTokens) {
+      return `numeric token count ${candidateNumericTokens} exceeds ${policy.maxNumericTokens}`;
+    }
+
+    const originalNumericTokens = this.countNumericTokens(original);
+    if (
+      policy.maxAddedNumericTokens !== undefined
+      && candidateNumericTokens > originalNumericTokens + policy.maxAddedNumericTokens
+    ) {
+      return `numeric token increase ${candidateNumericTokens - originalNumericTokens} exceeds ${policy.maxAddedNumericTokens}`;
+    }
+
+    if (policy.forbidUnobservablePrecision) {
+      const candidatePrecision = this.countMatches(candidate, UNOBSERVABLE_PRECISION_RE);
+      const originalPrecision = this.countMatches(original, UNOBSERVABLE_PRECISION_RE);
+      if (candidatePrecision > originalPrecision) {
+        return "unobservable precision introduced";
+      }
+    }
+
+    return undefined;
+  }
+
+  private countNumericTokens(content: string): number {
+    return content.match(NUMERIC_TOKEN_RE)?.length ?? 0;
+  }
+
+  private countTerm(content: string, term: string): number {
+    const escaped = this.escapeRegExp(term);
+    const pattern = /^[A-Za-z][A-Za-z0-9²]*$/u.test(term)
+      ? new RegExp(`(?<![A-Za-z])${escaped}(?:值|[_0-9₀-₉]+)?(?![A-Za-z])`, "giu")
+      : new RegExp(escaped, "gu");
+    return this.countMatches(content, pattern);
+  }
+
+  private countMatches(content: string, pattern: RegExp): number {
+    return [...content.matchAll(new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`))].length;
+  }
+
+  private normalizeForbiddenTerm(term: string): string {
+    return term.trim().replace(/^['“”「」『』‘’`]+|['“”「」『』‘’`]+$/g, "").replace(/值$/u, "");
+  }
+
+  private escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   private buildWarning(finalCount: number, lengthSpec: LengthSpec): string | undefined {
