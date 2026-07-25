@@ -387,6 +387,30 @@ describe("LengthNormalizerAgent", () => {
     expect(result.normalizedContent).toBe(prose);
   });
 
+  it("emits safe expansion instructions for a bounded fallback pass", async () => {
+    const agent = createAgent();
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({
+      content: "安全扩写后的正文。".repeat(20),
+      usage: ZERO_USAGE,
+    });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 220, softMin: 190, softMax: 250, hardMin: 160, hardMax: 320,
+      countingMode: "zh_chars", normalizeMode: "expand",
+    });
+
+    await agent.normalizeChapter({
+      chapterContent: "短正文。".repeat(20),
+      lengthSpec,
+      reducedControlBlock: "不得新增数字、器材或未来信息。",
+      safeExpansion: true,
+    });
+
+    const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content?: string }> | undefined;
+    const userPrompt = messages?.map((message) => message.content ?? "").join("\n") ?? "";
+    expect(userPrompt).toContain("Safe Expansion Fallback");
+    expect(userPrompt).toContain("只增加已有场景中的对白、动作、空间过渡");
+  });
+
   it("rejects newly introduced forbidden OD output even when the length is valid", async () => {
     const agent = createAgent();
     const draft = "原始正文保持在安全范围内。".repeat(20);

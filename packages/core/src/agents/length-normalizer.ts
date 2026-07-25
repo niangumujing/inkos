@@ -7,6 +7,8 @@ export interface NormalizeLengthInput {
   readonly lengthSpec: LengthSpec;
   readonly chapterIntent?: string;
   readonly reducedControlBlock?: string;
+  /** Retry mode used only after a constraint-safe expansion was rejected. */
+  readonly safeExpansion?: boolean;
 }
 
 export interface NormalizeLengthOutput {
@@ -73,7 +75,7 @@ export class LengthNormalizerAgent extends BaseAgent {
       };
     }
 
-    const systemPrompt = this.buildSystemPrompt(mode);
+    const systemPrompt = this.buildSystemPrompt(mode, input.safeExpansion === true);
     const userPrompt = this.buildUserPrompt(input, originalCount, mode);
     const response = await this.chat(
       [
@@ -119,7 +121,7 @@ export class LengthNormalizerAgent extends BaseAgent {
     };
   }
 
-  private buildSystemPrompt(mode: LengthNormalizeMode): string {
+  private buildSystemPrompt(mode: LengthNormalizeMode, safeExpansion: boolean): string {
     const action = mode === "compress"
       ? "compress"
       : "expand";
@@ -131,7 +133,8 @@ export class LengthNormalizerAgent extends BaseAgent {
 - 保留章节原有事实、关键钩子、角色名和必须保留的标记
 - 用户提供的章节约束是硬约束；不得以扩写、压缩或长度目标为理由放宽、改写或反向解释
 - 不要引入新的支线、未来揭示或额外总结
-- 不要在正文外输出任何解释`;
+- 不要在正文外输出任何解释${safeExpansion ? `
+- 当前是安全扩写补偿：只增加已有场景中的对白、动作、空间过渡和可观察反应；不得新增数字、单位、器材、人物、势力、设定、伏笔或未来信息` : ""}`;
   }
 
   private buildUserPrompt(
@@ -166,7 +169,9 @@ ${originalCount}
 - 不要插入解释性总结或分析
 - 输出修正后的完整正文，不要加标签
 
-${intentBlock}${controlBlock}
+${intentBlock}${controlBlock}${input.safeExpansion ? `
+## Safe Expansion Fallback
+仅补足已有场景的对白、动作、空间过渡和可观察反应。不要改写既有事实，不要添加任何新的数字、单位、精度、器材、人物、势力、世界观解释、伏笔或内部标记。` : ""}
 ## Chapter Content
 ${input.chapterContent}`;
   }

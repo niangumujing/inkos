@@ -3099,6 +3099,7 @@ ${matrix}`,
     wordCount: number;
     applied: boolean;
     tokenUsage?: TokenUsageSummary;
+    warning?: string;
   }> {
     const writerCount = countChapterLength(
       params.chapterContent,
@@ -3115,12 +3116,30 @@ ${matrix}`,
     const normalizer = new LengthNormalizerAgent(
       this.agentCtxFor("length-normalizer", params.bookId),
     );
-    const normalized = await normalizer.normalizeChapter({
+    let normalized = await normalizer.normalizeChapter({
       chapterContent: params.chapterContent,
       lengthSpec: params.lengthSpec,
       chapterIntent: params.chapterIntent,
       reducedControlBlock: params.reducedControlBlock,
     });
+
+    // A polluted expansion is rejected by the normalizer's deterministic
+    // guard. Give short drafts one bounded, safer retry instead of accepting
+    // a hard-range failure immediately. The retry has a stricter prompt and
+    // is still checked by the same post-generation constraint policy.
+    if (
+      !normalized.applied
+      && writerCount < params.lengthSpec.hardMin
+      && normalized.warning?.includes("violated user constraints")
+    ) {
+      normalized = await normalizer.normalizeChapter({
+        chapterContent: params.chapterContent,
+        lengthSpec: params.lengthSpec,
+        chapterIntent: params.chapterIntent,
+        reducedControlBlock: params.reducedControlBlock,
+        safeExpansion: true,
+      });
+    }
 
     // Safety net: if normalizer output is less than 25% of original, it was too destructive.
     // Reject and keep original content.
@@ -3146,6 +3165,7 @@ ${matrix}`,
       wordCount: normalized.finalCount,
       applied: normalized.applied,
       tokenUsage: normalized.tokenUsage,
+      warning: normalized.warning,
     };
   }
 
