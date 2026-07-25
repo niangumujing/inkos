@@ -620,6 +620,32 @@ describe("ContinuityAuditor", () => {
     expect(sanitized[0]?.suggestion).not.toMatch(/量角器|OD|mV/u);
   });
 
+  it("lets persisted user guidance override a contradictory model ban", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-user-guidance-precedence-test",
+    });
+    const body = [
+      "## 不要做",
+      "- 不得含数字“十七”。",
+      "",
+      "## 用户原始章节指导（逐条强制遵守）",
+      "- 保留铜匣内壁十七道刻痕这一第1章已建立事实。",
+    ].join("\n");
+
+    const issues = (auditor as any).detectLiteralMemoContractViolations(
+      body,
+      "铜匣内壁十七道刻痕仍在。",
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
+  });
+
   it("drops a fabricated quoted memo requirement despite incidental phrase overlap", () => {
     const auditor = new ContinuityAuditor({
       client: {

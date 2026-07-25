@@ -734,7 +734,11 @@ ${chapterContent}${contractChecklistBlock}`;
   }
 
   private extractMemoForbiddenTerms(memoBody: string): string[] {
-    const section = this.extractMemoContractText(memoBody);
+    // When the caller persisted one-off user guidance, it is the authoritative
+    // source for literal bans. Model-owned memo rules may hallucinate bans
+    // such as “不得含数字十七” that contradict the user's actual brief.
+    const persistedUserContext = this.extractPersistedChapterContext(memoBody);
+    const section = persistedUserContext ?? this.extractMemoDoNot(memoBody);
     if (!section) return [];
 
     const terms = new Set<string>();
