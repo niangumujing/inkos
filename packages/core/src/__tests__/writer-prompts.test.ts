@@ -63,6 +63,7 @@ describe("buildWriterSystemPrompt", () => {
     expect(prompt).toContain("明喻节制");
     expect(prompt).toContain("高潮必须演出");
     expect(prompt).toContain("不许概述");
+    expect(prompt).toContain("未知人物只写证据，不写身份");
   });
 
   it("injects cross-theme prose-execution rules into the English prompt", () => {
