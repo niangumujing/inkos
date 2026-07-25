@@ -344,12 +344,10 @@ async function produceShort(
         return { coverError: String(error) };
       });
 
-  if (revisionWarning) {
-    await writeShortRunStatus(root, baseDir, {
-      status: "complete",
-      warning: `revision skipped: ${revisionWarning}`,
-    }).catch(() => undefined);
-  }
+  await writeShortRunStatus(root, baseDir, {
+    status: "complete",
+    ...(revisionWarning ? { warning: `revision skipped: ${revisionWarning}` } : {}),
+  }).catch(() => undefined);
 
   return buildShortRunResult(storyId, baseDir, coverArtifacts);
 }

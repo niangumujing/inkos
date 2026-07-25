@@ -386,4 +386,94 @@ describe("LengthNormalizerAgent", () => {
     expect(chatSpy).toHaveBeenCalledTimes(1);
     expect(result.normalizedContent).toBe(prose);
   });
+
+  it("rejects newly introduced forbidden OD output even when the length is valid", async () => {
+    const agent = createAgent();
+    const draft = "原始正文保持在安全范围内。".repeat(20);
+    const polluted = "顾临川把票据按平，OD₅₄₀=1.87的读数落在纸面上。".repeat(5);
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({
+      content: polluted,
+      usage: ZERO_USAGE,
+    });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 220,
+      softMin: 190,
+      softMax: 250,
+      hardMin: 160,
+      hardMax: 320,
+      countingMode: "zh_chars",
+      normalizeMode: "expand",
+    });
+
+    const result = await agent.normalizeChapter({
+      chapterContent: draft,
+      lengthSpec,
+      reducedControlBlock: "本章没有任何测量仪器。禁止出现 OD值、mV、nm、量角器或肉眼无法获得的精度。",
+    });
+
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+    expect(result.normalizedContent).toBe(draft);
+    expect(result.applied).toBe(false);
+    expect(result.warning).toContain("forbidden term OD");
+  });
+
+  it("rejects numeric-token overflow instead of accepting a polluted expansion", async () => {
+    const agent = createAgent();
+    const draft = "原始正文保持在安全范围内。".repeat(20);
+    const polluted = "他在纸边连续写下1、2、3、4、5、6、7、8、9、10、11、12、13、14、15、16、17、18。";
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({
+      content: polluted,
+      usage: ZERO_USAGE,
+    });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 220,
+      softMin: 190,
+      softMax: 250,
+      hardMin: 160,
+      hardMax: 320,
+      countingMode: "zh_chars",
+      normalizeMode: "expand",
+    });
+
+    const result = await agent.normalizeChapter({
+      chapterContent: draft,
+      lengthSpec,
+      reducedControlBlock: "数字 token 不超过 5 个；避免过密数值。",
+    });
+
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+    expect(result.normalizedContent).toBe(draft);
+    expect(result.applied).toBe(false);
+    expect(result.warning).toContain("numeric token count 18 exceeds 5");
+  });
+
+  it("rejects newly introduced unobservable precision", async () => {
+    const agent = createAgent();
+    const draft = "原始正文保持在安全范围内。".repeat(20);
+    const polluted = "他记录下纸背的变化：误差0.004mm，随后把结果归入精度模型。".repeat(4);
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({
+      content: polluted,
+      usage: ZERO_USAGE,
+    });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 220,
+      softMin: 190,
+      softMax: 250,
+      hardMin: 160,
+      hardMax: 320,
+      countingMode: "zh_chars",
+      normalizeMode: "expand",
+    });
+
+    const result = await agent.normalizeChapter({
+      chapterContent: draft,
+      lengthSpec,
+      reducedControlBlock: "本章没有任何测量仪器，不得生成不可观测精度；只保留少量可由手感获得的数据。",
+    });
+
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+    expect(result.normalizedContent).toBe(draft);
+    expect(result.applied).toBe(false);
+    expect(result.warning).toContain("unobservable precision introduced");
+  });
 });

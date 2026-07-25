@@ -93,6 +93,8 @@ describe("short fiction resume + failure marker (C2)", () => {
     expect(createOutline).not.toHaveBeenCalled();   // outline resumed from disk
     expect(reviewOutline).not.toHaveBeenCalled();
     await expect(access(join(root, "shorts", "elevator", "final", "full.md"))).resolves.toBeUndefined();
+    const status = JSON.parse(await readFile(join(root, "shorts", "elevator", "status.json"), "utf-8"));
+    expect(status.status).toBe("complete");
     expect(result.storyId).toBe("elevator");
   });
 
@@ -216,6 +218,8 @@ describe("short fiction resume + failure marker (C2)", () => {
     expect(result.coverError).toBe("disabled");
     expect(packageSpy).toHaveBeenCalled();
     await expect(access(join(root, "shorts", "elevator", "final", "sales-package.md"))).resolves.toBeUndefined();
+    const status = JSON.parse(await readFile(join(root, "shorts", "elevator", "status.json"), "utf-8"));
+    expect(status.status).toBe("complete");
   });
 });
 
