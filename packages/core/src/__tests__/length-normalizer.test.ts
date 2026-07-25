@@ -500,6 +500,21 @@ describe("LengthNormalizerAgent", () => {
     expect(result.warning).toContain("forbidden term OD remains in output");
   });
 
+  it("does not treat a required quantitative example as a forbidden unit", async () => {
+    const agent = createAgent();
+    const draft = "盐霜的橙红谱线偏移3.2nm。".repeat(8);
+    const expanded = "盐霜的橙红谱线偏移3.2nm，顾临川记录三次读数后收起棱镜。".repeat(8);
+    vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({ content: expanded, usage: ZERO_USAGE });
+    const lengthSpec = LengthSpecSchema.parse({ target: 220, softMin: 190, softMax: 250, hardMin: 160, hardMax: 320, countingMode: "zh_chars", normalizeMode: "expand" });
+    const result = await agent.normalizeChapter({
+      chapterContent: draft,
+      lengthSpec,
+      chapterIntent: "不要描写赤穹颜色变化或情绪渲染，所有光感必须量化（如橙红波长偏移3.2nm）。",
+    });
+    expect(result.normalizedContent).toBe(expanded);
+    expect(result.warning ?? "").not.toContain("forbidden term nm");
+  });
+
   it("does not treat a single-character explanation subject as a literal ban", async () => {
     const agent = createAgent();
     const draft = "第七道刻痕仍可测量。".repeat(12);

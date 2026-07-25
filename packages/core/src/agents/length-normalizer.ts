@@ -193,8 +193,12 @@ ${input.chapterContent}`;
     const forbiddenTerms = new Set<string>();
     for (const line of constraintText.split(/\r?\n/)) {
       if (!NEGATIVE_CONSTRAINT_RE.test(line)) continue;
+      const permissionClause = line.search(
+        /(?:；|;|，|,)\s*[^；;，,]{0,40}(?:只(?:能|可)|允许|可以|应(?:当)?|必须)\s*(?:量化|使用|出现|保留|记录|写|称为)|(?:;|,)\s*[^;,]{0,40}(?:may|can|must|should)\s+(?:quantify|use|appear|keep|record|write)/iu,
+      );
+      const forbiddenClause = permissionClause >= 0 ? line.slice(0, permissionClause) : line;
 
-      for (const quoted of line.matchAll(/[“”「」『』‘’'`"]([^“”「」『』‘’'`"]+)[“”「」『』‘’'`"]?/g)) {
+      for (const quoted of forbiddenClause.matchAll(/[“”「」『』‘’'`"]([^“”「」『』‘’'`"]+)[“”「」『』‘’'`"]?/g)) {
         const term = quoted[1]?.trim();
         if (term && term.length >= 2 && term.length <= 24) {
           forbiddenTerms.add(this.normalizeForbiddenTerm(term));
@@ -202,7 +206,7 @@ ${input.chapterContent}`;
       }
 
       for (const knownTerm of KNOWN_FORBIDDEN_TERMS) {
-        if (new RegExp(this.escapeRegExp(knownTerm), "iu").test(line)) {
+        if (new RegExp(this.escapeRegExp(knownTerm), "iu").test(forbiddenClause)) {
           forbiddenTerms.add(this.normalizeForbiddenTerm(knownTerm));
         }
       }
