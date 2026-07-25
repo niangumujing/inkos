@@ -466,6 +466,25 @@ describe("ContinuityAuditor", () => {
     }
   });
 
+  it("does not treat parenthetical permitted evidence as a literal-term ban", () => {
+    const contractAuditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-parenthetical-evidence-test",
+    });
+
+    const issues = (contractAuditor as any).detectLiteralMemoContractViolations(
+      "## 不要做\n不要出现手机短信（她用座机查气象局电话，拨号音真实）。",
+      "她拿起座机，拨号音真实、单调、带着老式线路的底噪。",
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
+  });
+
   it("does not treat an explanation ban as a literal-term ban", () => {
     const explanationAuditor = new ContinuityAuditor({
       client: {

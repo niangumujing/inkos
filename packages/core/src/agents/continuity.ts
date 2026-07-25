@@ -772,7 +772,9 @@ ${chapterContent}${contractChecklistBlock}`;
       );
       const forbiddenClause = permissionClause >= 0 ? rule.slice(0, permissionClause) : rule;
 
-      for (const match of forbiddenClause.matchAll(/[（(]([^）)]+)[）)]/gu)) addTerms(match[1] ?? "");
+      // Parentheses in a “不要做” rule commonly explain the permitted
+      // observable treatment (rather than spelling a banned literal). Only
+      // quoted terms and explicit direct lists are safe sources of literal bans.
       for (const match of forbiddenClause.matchAll(/[“”"'‘’`]([^“”"'‘’`]{2,24})[“”"'‘’`]/gu)) {
         addTerms(match[1] ?? "");
       }
