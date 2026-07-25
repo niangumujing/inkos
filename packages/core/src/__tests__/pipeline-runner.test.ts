@@ -4546,7 +4546,7 @@ describe("PipelineRunner", () => {
     }
   });
 
-  it("adds final paragraph fragmentation warnings from revised content before persist", async () => {
+  it("merges final paragraph fragmentation before persist", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
     const storyDir = join(state.bookDir(bookId), "story");
     const draftBody = "林越先把门推开一条缝，再侧耳去听墙后的动静。屋里的灯没有亮，但桌角还有没散的热气，说明人刚离开不久。";
@@ -4621,16 +4621,9 @@ describe("PipelineRunner", () => {
     try {
       const result = await runner.writeNextChapter(bookId, 120);
 
-      expect(result.auditResult.issues).toEqual(
+      expect(result.auditResult.issues).not.toEqual(
         expect.arrayContaining([
-          expect.objectContaining({
-            category: "paragraph-shape",
-            description: expect.stringContaining("段落被切得过碎"),
-          }),
-          expect.objectContaining({
-            category: "paragraph-shape",
-            description: expect.stringContaining("连续出现"),
-          }),
+          expect.objectContaining({ category: "paragraph-shape" }),
         ]),
       );
     } finally {

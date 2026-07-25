@@ -43,6 +43,27 @@ describe("validatePostWrite", () => {
     expect(normalized).toBe("他把U盘攥进手心，回头看了一眼档案室的黑窗。");
   });
 
+  it("merges extreme runs of fragmented narrative paragraphs before persistence", () => {
+    const content = Array.from({ length: 12 }, (_, index) => `他向前走了第${index + 1}步。`).join("\n\n");
+    const normalized = normalizePostWriteSurface(content, "zh");
+    const paragraphs = normalized.split(/\n\s*\n/u);
+
+    expect(paragraphs.length).toBeLessThan(12);
+    expect(detectParagraphShapeWarnings(normalized, "zh")).toEqual([]);
+    expect(normalized.replace(/\s+/gu, "")).toBe(content.replace(/\s+/gu, ""));
+  });
+
+  it("keeps dialogue paragraphs separate while merging narrative fragments", () => {
+    const content = [
+      "他抬起头。", "门缝里有光。", "脚步停在门外。", "风从窗缝钻进来。",
+      "「谁在那里？」", "他没有回答。", "手指压住纸角。", "墨迹仍未干。", "钟声落下来。",
+    ].join("\n\n");
+    const normalized = normalizePostWriteSurface(content, "zh");
+
+    expect(normalized).toContain("\n\n「谁在那里？」\n\n");
+    expect(normalized.replace(/\s+/gu, "")).toBe(content.replace(/\s+/gu, ""));
+  });
+
   it("returns no violations for clean content", () => {
     const content = "他走过去，端起杯子，灌了一口。外面的雨越下越大。\n\n她站在窗前，看着街上的行人匆匆走过。";
     const result = validatePostWrite(content, baseProfile, null);

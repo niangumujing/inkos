@@ -24,7 +24,48 @@ export function normalizePostWriteSurface(
   if (languageOverride !== "en") {
     normalized = normalized.replace(/——+/g, "，");
   }
+  normalized = mergeFragmentedNarrativeParagraphs(normalized, languageOverride ?? "zh");
   return normalized.trimEnd();
+}
+
+function mergeFragmentedNarrativeParagraphs(
+  content: string,
+  language: "zh" | "en",
+): string {
+  const shape = analyzeParagraphShape(content, language);
+  if (shape.paragraphs.length < 4) return content;
+  if (shape.shortRatio < 0.6 && shape.maxConsecutiveShort < 3) return content;
+
+  const threshold = language === "en" ? 120 : 35;
+  const target = language === "en" ? 180 : 60;
+  const separator = language === "en" ? " " : "";
+  const paragraphs = content.split(/\n\s*\n/gu).map((paragraph) => paragraph.trim()).filter(Boolean);
+  const merged: string[] = [];
+  let buffer: string[] = [];
+
+  const flush = (): void => {
+    if (buffer.length === 0) return;
+    const joined = buffer.join(separator);
+    const previous = merged.at(-1);
+    if (joined.length < target && previous && !isDialogueParagraph(previous)) {
+      merged[merged.length - 1] = `${previous}${separator}${joined}`;
+    } else {
+      merged.push(joined);
+    }
+    buffer = [];
+  };
+
+  for (const paragraph of paragraphs) {
+    if (isDialogueParagraph(paragraph) || paragraph.length >= threshold) {
+      flush();
+      merged.push(paragraph);
+      continue;
+    }
+    buffer.push(paragraph);
+    if (buffer.join(separator).length >= target) flush();
+  }
+  flush();
+  return merged.join("\n\n");
 }
 
 function stripPostWriteMetaLines(content: string): string {
