@@ -3128,9 +3128,8 @@ ${matrix}`,
     // a hard-range failure immediately. The retry has a stricter prompt and
     // is still checked by the same post-generation constraint policy.
     if (
-      !normalized.applied
-      && writerCount < params.lengthSpec.hardMin
-      && normalized.warning?.includes("violated user constraints")
+      writerCount < params.lengthSpec.hardMin
+      && normalized.finalCount < params.lengthSpec.hardMin
     ) {
       normalized = await normalizer.normalizeChapter({
         chapterContent: params.chapterContent,

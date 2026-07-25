@@ -2279,6 +2279,56 @@ describe("PipelineRunner", () => {
     }
   });
 
+  it("uses the safe expansion fallback when the first pass remains short without a warning", async () => {
+    const { root, runner, bookId } = await createRunnerFixture();
+    const shortDraft = "短正文。".repeat(20);
+    const safeDraft = "安全扩写后的对话与动作。".repeat(24);
+
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        chapterNumber: 1,
+        content: shortDraft,
+        wordCount: shortDraft.length,
+      }),
+    );
+    const normalizeChapter = vi.mocked(
+      LengthNormalizerAgent.prototype.normalizeChapter,
+    )
+      .mockResolvedValueOnce({
+        normalizedContent: shortDraft,
+        finalCount: shortDraft.length,
+        applied: false,
+        mode: "expand",
+        tokenUsage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        normalizedContent: safeDraft,
+        finalCount: safeDraft.length,
+        applied: true,
+        mode: "expand",
+        tokenUsage: ZERO_USAGE,
+      });
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true, issues: [], summary: "clean", overallScore: 95 }),
+    );
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
+      createAnalyzedOutput({ content: safeDraft, wordCount: safeDraft.length }),
+    );
+
+    try {
+      const result = await runner.writeNextChapter(bookId, 220);
+
+      expect(normalizeChapter).toHaveBeenCalledTimes(2);
+      expect(normalizeChapter.mock.calls[1]?.[0]).toMatchObject({
+        safeExpansion: true,
+        chapterContent: shortDraft,
+      });
+      expect(result.lengthTelemetry?.finalCount).toBe(safeDraft.length);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("records a length warning when a single normalize pass still misses the hard range", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
     const overlongDraft = "冗余句子。".repeat(60);
