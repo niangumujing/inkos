@@ -480,6 +480,8 @@ Evidence discipline:
 - Never invent a missing chapter memo, prior scene, subplot appearance, or chapter count. If a source block is absent, say it is unavailable and do not infer its contents.
 - Claims such as "连续 N 章" or "最近 N 章" are allowed only when the supplied chapter summaries or full chapter texts contain at least N distinct chapters.
 - When a Chapter Memo is supplied, check its explicit "Do not / 不要做" rules one by one. A direct violation is at least warning severity, and becomes critical when it causes POV leakage, premature revelation, broken continuity, or a missing required scene/payoff.
+- If an issue says the memo requires something, quote an exact phrase that exists in the supplied memo. If you cannot quote it, omit that claim.
+- Never recommend adding any term, instrument, unit, character, reveal, or plot element prohibited by the memo. Keep suggestions inside the memo's allowed observable language.
 
 Audit dimensions:
 ${dimList}
@@ -522,6 +524,11 @@ Score holistically — do not let a single minor issue tank the score.`
 如果章节备忘、规则栈或输入上下文明确指定多条剧情线的比例（权谋/感情、事业/恋爱、案件/人物等），要审它们是否真正落成了场景、对话、行动或关系变化。只用一句总结带过的线，视为缺失。只有当 memo 明确要求本章必须推进该线时，才标 critical。
 
 每条 issue 必须给 repair_scope 作为 typed 路由提示："local" 表示措辞、段落形状、小重复、句段级小修；"structural" 表示主线偏离、时间线断裂、场面/回报缺失、人物逻辑崩、视角/信息边界失败，或任何需要重写场景/整章的问题；只有确实无法判断时才写 "unknown"。
+
+证据纪律：
+- 不得编造章节备忘、前文场面、支线出场或章节数量；来源缺失时只能说明不可用，不得自行补全。
+- 如果 issue 声称“memo 要求某事”，description 必须逐字引用当前输入 memo 中真实存在的短语；无法引用就删除这条声称。
+- 必须逐条检查“不要做”，且 suggestion 绝不能建议加入 memo 明确禁止的术语、器材、单位、角色、揭示或剧情元素，只能在 memo 允许的可观察表达内修复。
 
 审查维度：
 ${dimList}
@@ -680,7 +687,12 @@ ${chapterContent}${contractChecklistBlock}`;
       )
       : [];
     const planningLeakIssues = this.detectInternalPlanningLeaks(chapterContent, resolvedLanguage);
-    const issues = [...contractIssues, ...planningLeakIssues, ...result.issues];
+    const modelIssues = this.sanitizeModelAuditIssues(
+      result.issues,
+      options?.chapterMemo,
+      resolvedLanguage,
+    );
+    const issues = [...contractIssues, ...planningLeakIssues, ...modelIssues];
     return {
       ...result,
       passed: result.passed && !issues.some((issue) => issue.severity === "critical"),
@@ -695,48 +707,137 @@ ${chapterContent}${contractChecklistBlock}`;
     return section && section.length > 0 ? section : undefined;
   }
 
+  private extractMemoForbiddenTerms(memoBody: string): string[] {
+    const section = this.extractMemoDoNot(memoBody);
+    if (!section) return [];
+
+    const terms = new Set<string>();
+    const addTerms = (raw: string): void => {
+      for (const candidate of raw
+        .replace(/^(?:使用|出现|提及|写出|称为|叫作?|引入|加入|添加|描述为|只写|不要使用|不得使用|禁止使用|do not use|must not use)\s*/iu, "")
+        .split(/[、,，;；/|]/u)) {
+        const term = candidate
+          .replace(/^(?:如|例如|包括|such as|e\.g\.?)\s*/iu, "")
+          .replace(/等.*$/u, "")
+          .replace(/\b(?:terms?|words?)\b.*$/iu, "")
+          .trim();
+        if (term.length >= 2 && term.length <= 24 && !/^(?:不要|不得|禁止|禁用|只|仅|可以|允许|应当|必须)$/u.test(term)) {
+          terms.add(term);
+        }
+      }
+    };
+
+    for (const line of section.split("\n")) {
+      const rule = line.replace(/^[-*]\s*/, "").trim();
+      const hasExplicitBanAction = /(?:不要|不得|禁止|禁用|do not|must not).*(?:出现|使用|提及|写出|称为|叫作?|引入|加入|添加|use|mention|name|call|describe|introduce)/iu.test(rule);
+      const hasDirectBanList = /(?:不要|不得|禁止|禁用|do not|must not)\s*[^。.!！？?；;\n]{2,}(?:、|,\s*|，\s*(?!只|允许|可以|应|必须))/iu.test(rule);
+      if (!hasExplicitBanAction && !hasDirectBanList) continue;
+      const permissionClause = rule.search(
+        /(?:；|;|，|,)\s*[^；;，,]{0,40}(?:只(?:能|可)|允许|可以|应(?:当)?|必须)\s*(?:叫|称为|使用|出现)|(?:;|,)\s*[^;,]{0,40}(?:may|can|must|should)\s+(?:be called|use|appear)/iu,
+      );
+      const forbiddenClause = permissionClause >= 0 ? rule.slice(0, permissionClause) : rule;
+
+      for (const match of forbiddenClause.matchAll(/[（(]([^）)]+)[）)]/gu)) addTerms(match[1] ?? "");
+      for (const match of forbiddenClause.matchAll(/[“”"'‘’`]([^“”"'‘’`]{2,24})[“”"'‘’`]/gu)) {
+        addTerms(match[1] ?? "");
+      }
+
+      // Also support explicit unquoted lists such as “不要量角器、OD、mV”.
+      const list = forbiddenClause.match(/(?:不要|不得|禁止|禁用|do not|must not)(?:使用|出现|提及|写出|称为|叫作?|引入|加入|添加)?\s*([^。.!！？?；;\n]+)/iu)?.[1];
+      if (list) addTerms(list);
+
+      const introducedEntity = rule.match(
+        /(?:不要|不得|禁止|禁用|do not|must not)\s*(?:提前)?(?:引入|introduce)\s*([\p{Script=Han}A-Za-z0-9_-]{2,24})/iu,
+      )?.[1];
+      if (introducedEntity) terms.add(introducedEntity);
+    }
+
+    return [...terms];
+  }
+
+  private countForbiddenTerm(text: string, term: string): number {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const asciiUnit = /^[A-Za-z][A-Za-z0-9_-]*$/u.test(term);
+    const pattern = asciiUnit
+      ? new RegExp(`\\b${escaped}(?:[_-]?[0-9₀-₉]+)?\\b`, "giu")
+      : new RegExp(escaped, "gu");
+    return [...text.matchAll(pattern)].length;
+  }
+
+  private sanitizeModelAuditIssues(
+    issues: ReadonlyArray<AuditIssue>,
+    chapterMemo: ChapterMemo | undefined,
+    language: PromptLanguage,
+  ): AuditIssue[] {
+    const forbiddenTerms = chapterMemo ? this.extractMemoForbiddenTerms(chapterMemo.body) : [];
+    return issues
+      .filter((issue) => !this.isUnsupportedMemoClaim(issue, chapterMemo))
+      .map((issue) => {
+        const suggestionHasForbiddenTerm = forbiddenTerms.some(
+          (term) => this.countForbiddenTerm(issue.suggestion, term) > 0,
+        );
+        if (!suggestionHasForbiddenTerm) return issue;
+
+        return {
+          ...issue,
+          suggestion: language === "en"
+            ? "Repair only from observable facts already present in the chapter; do not introduce any term, instrument, or unit prohibited by the chapter memo."
+            : "仅依据正文中已经出现的可观察事实修复，不引入章节备忘明确禁止的术语、器材或单位。",
+        };
+      });
+  }
+
+  private isUnsupportedMemoClaim(
+    issue: AuditIssue,
+    chapterMemo: ChapterMemo | undefined,
+  ): boolean {
+    if (!chapterMemo) return false;
+    const text = issue.description;
+    const referencesMemo = /(?:章节备忘|备忘录|memo|chapter memo)/iu.test(text);
+    const memoDriftCategory = /(?:章节备忘偏离|chapter memo drift)/iu.test(issue.category);
+    if (!referencesMemo && !memoDriftCategory) return false;
+
+    const claim = text.match(
+      /(?:章节备忘|备忘录|memo|chapter memo)[^。.!！？?；;\n]{0,80}(?:要求|规定|明确|写明|指出|必须|应当|需要|requires?|mandates?|says?|must|should)[^。.!！？?；;\n]{0,120}/iu,
+    )?.[0] ?? text.match(
+      /(?:要求|规定|明确要求|requires?|mandates?|must|should)[^。.!！？?；;\n]{0,80}(?:章节备忘|备忘录|memo|chapter memo)[^。.!！？?；;\n]{0,100}/iu,
+    )?.[0] ?? (memoDriftCategory ? text : undefined);
+    if (!claim) return false;
+
+    const memoText = `${chapterMemo.goal}\n${chapterMemo.body}`;
+    const quotedEvidence = [...claim.matchAll(/[“”"'‘’`]([^“”"'‘’`]{2,80})[“”"'‘’`]/gu)]
+      .map((match) => match[1]!.trim())
+      .filter(Boolean);
+    if (quotedEvidence.some((quote) => memoText.includes(quote))) return false;
+
+    // A claim that attributes a requirement to the memo must carry wording
+    // traceable to that memo. Fabricated requirements such as “银线第3章显影”
+    // then fail closed instead of becoming actionable revision guidance.
+    const requirementContent = claim
+      .replace(/^.*?(?:要求|规定|明确(?:要求)?|写明|指出|必须|应当|需要|requires?|mandates?|says?|must|should)\s*/iu, "")
+      .replace(/^(?:本章|正文|the chapter|chapter)\s*/iu, "");
+    const hanRuns = requirementContent.match(/[\u4e00-\u9fff]{2,}/gu) ?? [];
+    const hanPhrases = hanRuns.flatMap((run) => {
+      const phrases = [run];
+      for (const size of [4, 3]) {
+        for (let i = 0; i <= run.length - size; i++) phrases.push(run.slice(i, i + size));
+      }
+      return phrases;
+    });
+    const candidatePhrases = [
+      ...hanPhrases,
+      ...(requirementContent.match(/[A-Za-z][A-Za-z0-9_-]{2,}/gu) ?? []),
+    ].filter((phrase) => !/^(?:本章|正文|内容|出现|写出|加入|使用|没有|必须|应当|需要|the|this|that|chapter|content|appear|include|use|with|from)$/iu.test(phrase));
+    return candidatePhrases.length > 0 && !candidatePhrases.some((phrase) => memoText.includes(phrase));
+  }
+
   private detectLiteralMemoContractViolations(
     memoBody: string,
     chapterContent: string,
     language: PromptLanguage,
   ): AuditIssue[] {
-    const section = this.extractMemoDoNot(memoBody);
-    if (!section) return [];
-
-    const forbiddenTerms = new Set<string>();
-    for (const line of section.split("\n")) {
-      const rule = line.replace(/^[-*]\s*/, "").trim();
-      if (!/(?:不要|不得|禁止|禁用|do not|must not).*(?:出现|使用|提及|写出|称为|引入|use|mention|name|call|describe as|introduce)/i.test(rule)) {
-        continue;
-      }
-      const permissionClause = rule.search(
-        /(?:；|;|，|,)\s*[^；;，,]{0,40}(?:只(?:能|可)|允许|可以|应(?:当)?|必须)\s*(?:叫|称为|使用|出现)|(?:;|,)\s*[^;,]{0,40}(?:may|can|must|should)\s+(?:be called|use|appear)/i,
-      );
-      const forbiddenClause = (permissionClause >= 0 ? rule.slice(0, permissionClause) : rule)
-        .split(/(?:；|;|，只|,\s*only)/i, 1)[0] ?? rule;
-      for (const match of forbiddenClause.matchAll(/[（(]([^）)]+)[）)]/g)) {
-        const termGroup = match[1]?.split(/[，,;]/, 1)[0] ?? "";
-        for (const rawTerm of termGroup.split(/[/、|]/)) {
-          const term = rawTerm
-            .replace(/^(?:如|例如|e\.g\.?|such as)\s*/i, "")
-            .replace(/等.*$/u, "")
-            .replace(/\b(?:terms?|words?)\b.*$/i, "")
-            .trim();
-          if (term.length >= 2 && term.length <= 24) forbiddenTerms.add(term);
-        }
-      }
-      for (const match of forbiddenClause.matchAll(/[“”"'‘’`]([^“”"'‘’`]{2,24})[“”"'‘’`]/g)) {
-        const term = match[1]?.trim();
-        if (term && term.length >= 2) forbiddenTerms.add(term);
-      }
-      const introducedEntity = forbiddenClause.match(
-        /(?:不要|不得|禁止|禁用|do not|must not)\s*(?:提前)?(?:引入|introduce)\s*([\p{Script=Han}A-Za-z0-9_-]{2,24})/iu,
-      )?.[1];
-      if (introducedEntity) forbiddenTerms.add(introducedEntity);
-    }
-
-    const violations = [...forbiddenTerms]
-      .map((term) => ({ term, count: chapterContent.split(term).length - 1 }))
+    const violations = this.extractMemoForbiddenTerms(memoBody)
+      .map((term) => ({ term, count: this.countForbiddenTerm(chapterContent, term) }))
       .filter(({ count }) => count > 0);
     if (violations.length === 0) return [];
 
