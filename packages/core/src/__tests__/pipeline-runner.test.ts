@@ -22,6 +22,7 @@ import type { ChapterMeta } from "../models/chapter.js";
 import { MemoryDB } from "../state/memory-db.js";
 import * as memoryDbModule from "../state/memory-db.js";
 import { countChapterLength } from "../utils/length-metrics.js";
+import { savePersistedPlan } from "../pipeline/persisted-governed-plan.js";
 
 const require = createRequire(import.meta.url);
 const hasNodeSqlite = (() => {
@@ -312,6 +313,96 @@ describe("PipelineRunner", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("loads the persisted chapter contract for standalone audit", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const bookDir = state.bookDir(bookId);
+    const runtimeDir = join(bookDir, "story", "runtime");
+    const intentMarkdown = [
+      "# Chapter Intent",
+      "",
+      "## Goal",
+      "Keep the sealed identity hidden.",
+      "",
+      "## Must Avoid",
+      "- Do not name the sealed identity.",
+    ].join("\n");
+    const memoBody = [
+      "## 当前任务",
+      "主角核验门锁刮痕并保留封印身份，不得越过当前认知边界。",
+      "",
+      "## 读者此刻在等什么",
+      "读者等待主角取得可验证证据，同时保持幕后身份仍未公开。",
+      "",
+      "## 该兑现的 / 暂不掀的",
+      "兑现门锁异常证据，暂不揭示封印身份与幕后操作者。",
+      "",
+      "## 日常/过渡承担什么任务",
+      "过渡段承担现场压力、证据保管和下一步行动准备，不得闲聊。",
+      "",
+      "## 关键抉择过三连问",
+      "主角选择保留证据，因为符合当前利益、已有认知和一贯谨慎人设。",
+      "",
+      "## 章尾必须发生的改变",
+      "章尾必须让门锁异常从猜测变成可复核证据，并提高现实风险。",
+      "",
+      "## 本章 hook 账",
+      "advance: 门锁刮痕推进为实证；defer: 封印身份继续保留。",
+      "",
+      "## 不要做",
+      "不要写出封印身份，不要进入反派内心，不要虚构此前不存在的章节。",
+    ].join("\n");
+
+    await mkdir(runtimeDir, { recursive: true });
+    await writeFile(join(runtimeDir, "chapter-0001.intent.md"), intentMarkdown, "utf-8");
+    await savePersistedPlan(bookDir, {
+      intent: {
+        chapter: 1,
+        goal: "Keep the sealed identity hidden.",
+        mustKeep: [],
+        mustAvoid: ["Do not name the sealed identity."],
+        styleEmphasis: [],
+      },
+      memo: {
+        chapter: 1,
+        goal: "保留封印身份并取得门锁实证",
+        isGoldenOpening: true,
+        body: memoBody,
+        threadRefs: ["H001"],
+      },
+      intentMarkdown,
+      plannerInputs: [],
+      runtimePath: join(runtimeDir, "chapter-0001.intent.md"),
+    });
+    await writeFile(join(bookDir, "chapters", "0001_Test.md"), "# 第1章 测试\n\n正文。", "utf-8");
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "测试",
+      status: "drafted",
+      wordCount: 3,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      auditIssues: [],
+      lengthWarnings: [],
+    }]);
+    const auditChapter = vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true, issues: [], summary: "clean" }),
+    );
+
+    try {
+      await runner.auditDraft(bookId, 1);
+
+      expect(auditChapter.mock.calls[0]?.[4]).toEqual(expect.objectContaining({
+        chapterIntent: expect.stringContaining("Do not name the sealed identity"),
+        chapterMemo: expect.objectContaining({
+          goal: "保留封印身份并取得门锁实证",
+          body: expect.stringContaining("## 不要做"),
+        }),
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("does not reuse override clients when credential sources differ", () => {
@@ -2066,10 +2157,12 @@ describe("PipelineRunner", () => {
     );
 
     try {
-      await runner.writeNextChapter(bookId, 220);
+      const result = await runner.writeNextChapter(bookId, 220);
 
       expect(normalizeChapter).not.toHaveBeenCalled();
       expect(auditChapter.mock.calls[0]?.[1]).toBe(nearTargetDraft);
+      expect(result.lengthWarnings?.[0]).toContain("建议字数区间");
+      expect(result.lengthTelemetry?.lengthWarning).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -4781,6 +4874,7 @@ describe("PipelineRunner", () => {
 
       expect(reviseChapter.mock.calls[0]?.[6]).toMatchObject({
         chapterIntent: expect.stringContaining("把注意力收回师债主线"),
+        externalContext: "把注意力收回师债主线，并强调柜台后的异常灯光。",
       });
       expect(reviseChapter.mock.calls[0]?.[6]).not.toMatchObject({
         chapterIntent: expect.stringContaining("商会路线优先"),
@@ -4950,6 +5044,66 @@ describe("PipelineRunner", () => {
       expect(savedChapter).toContain(revisedBody);
       expect(savedIndex[0]?.status).toBe("ready-for-review");
       expect(savedIndex[0]?.auditIssues).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, SLOW_PIPELINE_TEST_TIMEOUT_MS);
+
+  it("rejects a strict-gate revision while any critical issue remains", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const storyDir = join(state.bookDir(bookId), "story");
+    const chaptersDir = join(state.bookDir(bookId), "chapters");
+    const originalBody = "林越推门进去，柜台后有一盏没关的灯。";
+    const revisedBody = "林越停在门槛前，柜台后那盏灯仍亮着。";
+
+    await Promise.all([
+      writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), createStateCard({
+        chapter: 1,
+        location: "旧港便利店",
+        protagonistState: "林越仍在追查师债。",
+        goal: "确认柜台后的异常。",
+        conflict: "关键证据仍不完整。",
+      }), "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+    ]);
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "audit-failed",
+      wordCount: originalBody.length,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: [],
+      lengthWarnings: [],
+    }]);
+
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+      .mockResolvedValueOnce(createAuditResult({
+        passed: false,
+        issues: [CRITICAL_ISSUE, { ...CRITICAL_ISSUE, category: "第二项关键问题" }],
+        summary: "two critical issues",
+      }))
+      .mockResolvedValueOnce(createAuditResult({
+        passed: false,
+        issues: [CRITICAL_ISSUE],
+        summary: "one critical issue remains",
+      }));
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(createReviseOutput({
+      revisedContent: revisedBody,
+      wordCount: revisedBody.length,
+      fixedIssues: ["- 修复了一项关键问题。"],
+    }));
+
+    try {
+      const result = await runner.reviseDraft(bookId, 1);
+      const savedChapter = await readFile(join(chaptersDir, "0001_Test_Chapter.md"), "utf-8");
+
+      expect(result.applied).toBe(false);
+      expect(result.revisionDiagnostics?.after.criticalCount).toBe(1);
+      expect(result.revisionDiagnostics?.standard).toContain("no critical issues remain");
+      expect(savedChapter).toContain(originalBody);
+      expect(savedChapter).not.toContain(revisedBody);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

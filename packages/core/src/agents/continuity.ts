@@ -476,6 +476,11 @@ If the chapter memo, rule stack, or supplied context specifies content proportio
 
 For every issue, set repair_scope as a typed routing hint: "local" for wording, paragraph shape, small repetition, or narrow sentence-level fixes; "structural" for plot drift, timeline break, missing scene/payoff, character logic collapse, POV/knowledge boundary failure, or anything requiring a rewritten scene/chapter; "unknown" only when you genuinely cannot decide.
 
+Evidence discipline:
+- Never invent a missing chapter memo, prior scene, subplot appearance, or chapter count. If a source block is absent, say it is unavailable and do not infer its contents.
+- Claims such as "连续 N 章" or "最近 N 章" are allowed only when the supplied chapter summaries or full chapter texts contain at least N distinct chapters.
+- When a Chapter Memo is supplied, check its explicit "Do not / 不要做" rules one by one. A direct violation is at least warning severity, and becomes critical when it causes POV leakage, premature revelation, broken continuity, or a missing required scene/payoff.
+
 Audit dimensions:
 ${dimList}
 
@@ -626,6 +631,14 @@ overall_score 评分校准：
         ? `\n## Previous Chapter Full Text (for transition checks)\n${previousChapter}\n`
         : `\n## 上一章全文（用于衔接检查）\n${previousChapter}\n`
       : "";
+    const memoDoNot = options?.chapterMemo
+      ? this.extractMemoDoNot(options.chapterMemo.body)
+      : undefined;
+    const contractChecklistBlock = memoDoNot
+      ? isEnglish
+        ? `\n\n## Mandatory Final Contract Check\nCompare the chapter against every rule below immediately before producing JSON. Every direct violation must appear in issues; do not summarize compliance without checking each rule.\n${memoDoNot}`
+        : `\n\n## 强制章末契约核对\n在输出 JSON 前，逐条对照以下规则检查正文。任何直接违规都必须写入 issues；不得未经逐条核验就概括为“完全兑现”。\n${memoDoNot}`
+      : "";
 
     const userPrompt = isEnglish
       ? `Review chapter ${chapterNumber}.
@@ -636,7 +649,7 @@ ${ledgerBlock}
 ${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBlock}${summariesBlock}${canonBlock}${fanficCanonBlock}${reducedControlBlock}${memoBlock}${prevChapterBlock}${styleGuideBlock}
 
 ## Chapter Content Under Review
-${chapterContent}`
+${chapterContent}${contractChecklistBlock}`
       : `请审查第${chapterNumber}章。
 
 ## 当前状态卡
@@ -645,7 +658,7 @@ ${ledgerBlock}
 ${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBlock}${summariesBlock}${canonBlock}${fanficCanonBlock}${reducedControlBlock}${memoBlock}${prevChapterBlock}${styleGuideBlock}
 
 ## 待审章节内容
-${chapterContent}`;
+${chapterContent}${contractChecklistBlock}`;
 
     const chatMessages = [
       { role: "system" as const, content: systemPrompt },
@@ -659,7 +672,102 @@ ${chapterContent}`;
       : await this.chat(chatMessages, chatOptions);
 
     const result = this.parseAuditResult(response.content, resolvedLanguage);
-    return { ...result, tokenUsage: response.usage };
+    const contractIssues = options?.chapterMemo
+      ? this.detectLiteralMemoContractViolations(
+        options.chapterMemo.body,
+        chapterContent,
+        resolvedLanguage,
+      )
+      : [];
+    const planningLeakIssues = this.detectInternalPlanningLeaks(chapterContent, resolvedLanguage);
+    const issues = [...contractIssues, ...planningLeakIssues, ...result.issues];
+    return {
+      ...result,
+      passed: result.passed && !issues.some((issue) => issue.severity === "critical"),
+      issues,
+      tokenUsage: response.usage,
+    };
+  }
+
+  private extractMemoDoNot(body: string): string | undefined {
+    const match = body.match(/^##\s*(?:不要做|Do not)\s*\n([\s\S]*?)(?=\n##\s|(?![\s\S]))/im);
+    const section = match?.[1]?.trim();
+    return section && section.length > 0 ? section : undefined;
+  }
+
+  private detectLiteralMemoContractViolations(
+    memoBody: string,
+    chapterContent: string,
+    language: PromptLanguage,
+  ): AuditIssue[] {
+    const section = this.extractMemoDoNot(memoBody);
+    if (!section) return [];
+
+    const forbiddenTerms = new Set<string>();
+    for (const line of section.split("\n")) {
+      const rule = line.replace(/^[-*]\s*/, "").trim();
+      if (!/(?:不要|不得|禁止|禁用|do not|must not).*(?:出现|使用|提及|写出|称为|引入|use|mention|name|call|describe as|introduce)/i.test(rule)) {
+        continue;
+      }
+      const forbiddenClause = rule.split(/(?:；|;|，只|,\s*only)/i, 1)[0] ?? rule;
+      for (const match of forbiddenClause.matchAll(/[（(]([^）)]+)[）)]/g)) {
+        const termGroup = match[1]?.split(/[，,;]/, 1)[0] ?? "";
+        for (const rawTerm of termGroup.split(/[/、|]/)) {
+          const term = rawTerm
+            .replace(/^(?:如|例如|e\.g\.?|such as)\s*/i, "")
+            .replace(/等.*$/u, "")
+            .replace(/\b(?:terms?|words?)\b.*$/i, "")
+            .trim();
+          if (term.length >= 2 && term.length <= 24) forbiddenTerms.add(term);
+        }
+      }
+      for (const match of forbiddenClause.matchAll(/[“”"'‘’`]([^“”"'‘’`]{2,24})[“”"'‘’`]/g)) {
+        const term = match[1]?.trim();
+        if (term && term.length >= 2) forbiddenTerms.add(term);
+      }
+      const introducedEntity = forbiddenClause.match(
+        /(?:不要|不得|禁止|禁用|do not|must not)\s*(?:提前)?(?:引入|introduce)\s*([\p{Script=Han}A-Za-z0-9_-]{2,24})/iu,
+      )?.[1];
+      if (introducedEntity) forbiddenTerms.add(introducedEntity);
+    }
+
+    const violations = [...forbiddenTerms]
+      .map((term) => ({ term, count: chapterContent.split(term).length - 1 }))
+      .filter(({ count }) => count > 0);
+    if (violations.length === 0) return [];
+
+    const detail = violations.map(({ term, count }) => `${term}×${count}`).join("、");
+    return [{
+      severity: "critical",
+      category: language === "en" ? "Chapter memo contract" : "章节备忘契约",
+      description: language === "en"
+        ? `The chapter uses explicitly forbidden literal terms: ${detail}.`
+        : `正文使用了章节备忘明确禁用的字面术语：${detail}。`,
+      suggestion: language === "en"
+        ? "Remove or replace every forbidden literal term while preserving the intended observable behavior."
+        : "逐处删除或替换禁用术语，仅保留章节备忘允许的可观察表现。",
+      repairScope: "local",
+    }];
+  }
+
+  private detectInternalPlanningLeaks(
+    chapterContent: string,
+    language: PromptLanguage,
+  ): AuditIssue[] {
+    const markers = [...new Set(chapterContent.match(/\b(?:NEW_)?H\d{3,}\b/g) ?? [])];
+    if (markers.length === 0) return [];
+
+    return [{
+      severity: "critical",
+      category: language === "en" ? "Internal planning leak" : "内部规划标记泄露",
+      description: language === "en"
+        ? `The chapter exposes internal hook identifiers: ${markers.join(", ")}.`
+        : `正文泄露内部伏笔标识：${markers.join("、")}。`,
+      suggestion: language === "en"
+        ? "Remove internal identifiers while preserving the fictional event they refer to."
+        : "删除内部标识，仅保留其对应的故事事件。",
+      repairScope: "local",
+    }];
   }
 
   private parseAuditResult(content: string, language: PromptLanguage): AuditResult {

@@ -127,6 +127,7 @@ export class ReviserAgent extends BaseAgent {
       contextPackage?: ContextPackage;
       ruleStack?: RuleStack;
       lengthSpec?: LengthSpec;
+      externalContext?: string;
     },
   ): Promise<ReviseOutput> {
     const [currentState, ledger, hooks, styleGuideRaw, volumeOutline, storyBible, characterMatrix, chapterSummaries, parentCanon, fanficCanon] = await Promise.all([
@@ -263,11 +264,17 @@ export class ReviserAgent extends BaseAgent {
     const styleGuideBlock = reducedControlBlock.length === 0
       ? `\n## 文风指南\n${styleGuide}`
       : "";
+    const externalContextBlock = options?.externalContext?.trim()
+      ? (isEnglish
+          ? `\n## One-off revision brief (authoritative)\n${options.externalContext.trim()}\n\nThis is the user's direct instruction for this revision. Follow every explicit constraint. Do not replace it with inferred intent from plans, audits, or state files.\n`
+          : `\n## 本次修订 brief（最高优先级）\n${options.externalContext.trim()}\n\n这是用户对本次修订的直接指令。必须逐条遵守明确约束，不得用规划、审计或状态文件中的推断意图替代。\n`)
+      : "";
 
     const userPrompt = `请修正第${chapterNumber}章。
 
 ## 审稿问题
 ${issueList}
+${externalContextBlock}
 
 ## 当前状态卡
 ${currentState}

@@ -419,10 +419,11 @@ describe("ContinuityAuditor", () => {
       "",
       "## 不要做",
       "不要写成大段打斗。",
+      "不要出现“灰痕”“焰纹”等能力名称；只写“指尖发烫”等可观察反应。",
     ].join("\n");
 
     try {
-      await auditor.auditChapter(bookDir, "Chapter body.", 42, "xuanhuan", {
+      const result = await auditor.auditChapter(bookDir, "他启用了灰痕。", 42, "xuanhuan", {
         chapterMemo: {
           chapter: 42,
           goal: "陆焚抢回残刃并离开",
@@ -449,10 +450,77 @@ describe("ContinuityAuditor", () => {
       expect(userPrompt).toContain("## 章节备忘（用于 memo 偏离检测）");
       expect(userPrompt).toContain("goal：陆焚抢回残刃并离开");
       expect(userPrompt).toContain("## 章尾必须发生的改变");
+      expect(userPrompt).toContain("## 强制章末契约核对");
+      expect(userPrompt).toContain("不得未经逐条核验就概括为“完全兑现”");
+      expect(userPrompt).toContain("不要写成大段打斗。");
+      expect(result.passed).toBe(false);
+      expect(result.issues).toContainEqual(expect.objectContaining({
+        severity: "critical",
+        category: "章节备忘契约",
+        description: expect.stringContaining("灰痕×1"),
+      }));
       // Legacy volume-outline block is gone.
       expect(userPrompt).not.toContain("## 卷纲");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("does not treat an explanation ban as a literal-term ban", () => {
+    const explanationAuditor = new ContinuityAuditor({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-explanation-contract-test",
+    });
+
+    const issues = (explanationAuditor as any).detectLiteralMemoContractViolations(
+      "## 不要做\n不要解释“临-07”含义，只测量并记录。",
+      "铁牌正面蚀刻临-07。",
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
+  });
+
+  it("detects unquoted forbidden character introductions and planning markers", () => {
+    const contractAuditor = new ContinuityAuditor({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-planning-leak-test",
+    });
+    const chapter = "门外有人通报程十七求见。顾临川记下：NEW_H008已验。";
+
+    const contractIssues = (contractAuditor as any).detectLiteralMemoContractViolations(
+      "## 不要做\n- 不得引入程十七。",
+      chapter,
+      "zh",
+    );
+    const leakIssues = (contractAuditor as any).detectInternalPlanningLeaks(chapter, "zh");
+
+    expect(contractIssues[0]?.description).toContain("程十七×1");
+    expect(leakIssues[0]).toMatchObject({
+      severity: "critical",
+      category: "内部规划标记泄露",
+    });
   });
 });

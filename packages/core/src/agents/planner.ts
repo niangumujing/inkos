@@ -398,8 +398,14 @@ export class PlannerAgent extends BaseAgent {
   }
 
   private collectMustKeep(currentState: string, storyBible: string): string[] {
+    const stateSource = currentState.includes("# 初始状态（第 0 章")
+      ? this.extractSection(currentState, [
+        "种子伏笔（startChapter = 0）",
+        "Seed hooks (startChapter = 0)",
+      ]) ?? ""
+      : currentState;
     return this.unique([
-      ...this.extractListItems(currentState, 2),
+      ...this.extractListItems(stateSource, 2),
       ...this.extractListItems(storyBible, 2),
     ]).slice(0, 4);
   }
