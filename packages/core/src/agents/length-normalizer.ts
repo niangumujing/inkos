@@ -134,7 +134,8 @@ export class LengthNormalizerAgent extends BaseAgent {
 - 用户提供的章节约束是硬约束；不得以扩写、压缩或长度目标为理由放宽、改写或反向解释
 - 不要引入新的支线、未来揭示或额外总结
 - 不要在正文外输出任何解释${safeExpansion ? `
-- 当前是安全扩写补偿：只增加已有场景中的对白、动作、空间过渡和可观察反应；不得新增数字、单位、器材、人物、势力、设定、伏笔或未来信息` : ""}`;
+- 当前是安全扩写补偿：只增加已有场景中的对白、动作、空间过渡和可观察反应；不得新增数字、单位、器材、人物、势力、设定、伏笔或未来信息
+- 如果原文已经含有违反用户约束的字面术语，先用不新增事实的中性可观察表达替换，再进行安全扩写` : ""}`;
   }
 
   private buildUserPrompt(
@@ -165,6 +166,7 @@ ${originalCount}
 - 保留正文中的关键标记、人物名、地点名和已有事实
 - 严格执行用户原始约束；禁止项、数字上限和可观测性边界优先于长度目标
 - 如果无法同时满足长度目标和用户约束，宁可保持原文，不要补造禁用术语、过密数字或不可观测精度
+- 如果当前正文已经含有用户明确禁止的术语、超限数字或不可观测精度，必须在不新增事实的前提下删除或改成中性可观察表达
 - 不要凭空新增子情节
 - 不要插入解释性总结或分析
 - 输出修正后的完整正文，不要加标签
@@ -225,8 +227,13 @@ ${input.chapterContent}`;
     policy: NormalizerConstraintPolicy,
   ): string | undefined {
     for (const term of policy.forbiddenTerms) {
-      if (this.countTerm(candidate, term) > this.countTerm(original, term)) {
+      const candidateCount = this.countTerm(candidate, term);
+      const originalCount = this.countTerm(original, term);
+      if (candidateCount > originalCount) {
         return `forbidden term ${term}`;
+      }
+      if (candidateCount > 0) {
+        return `forbidden term ${term} remains in output`;
       }
     }
 
@@ -247,7 +254,9 @@ ${input.chapterContent}`;
       const candidatePrecision = this.countMatches(candidate, UNOBSERVABLE_PRECISION_RE);
       const originalPrecision = this.countMatches(original, UNOBSERVABLE_PRECISION_RE);
       if (candidatePrecision > originalPrecision) {
-        return "unobservable precision introduced";
+        return originalPrecision > 0
+          ? "unobservable precision remains in output"
+          : "unobservable precision introduced";
       }
     }
 

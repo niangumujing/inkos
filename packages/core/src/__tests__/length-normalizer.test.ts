@@ -441,6 +441,63 @@ describe("LengthNormalizerAgent", () => {
     expect(result.warning).toContain("forbidden term OD");
   });
 
+  it("rejects a pre-existing forbidden term unless normalization removes it", async () => {
+    const agent = createAgent();
+    const draft = "原始正文含有OD值，其他内容保持安全。".repeat(8);
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({
+      content: "清理后的正文，没有仪器术语。".repeat(20),
+      usage: ZERO_USAGE,
+    });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 220,
+      softMin: 190,
+      softMax: 250,
+      hardMin: 160,
+      hardMax: 320,
+      countingMode: "zh_chars",
+      normalizeMode: "expand",
+    });
+
+    const result = await agent.normalizeChapter({
+      chapterContent: draft,
+      lengthSpec,
+      reducedControlBlock: "本章没有任何测量仪器。禁止出现 OD值、mV、nm、量角器或肉眼无法获得的精度。",
+    });
+
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+    expect(result.normalizedContent).not.toContain("OD");
+    expect(result.applied).toBe(true);
+  });
+
+  it("rejects a pre-existing forbidden term when normalization leaves it in place", async () => {
+    const agent = createAgent();
+    const draft = "原始正文含有OD值，其他内容保持安全。".repeat(8);
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({
+      content: draft + "补足已有场景。".repeat(8),
+      usage: ZERO_USAGE,
+    });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 220,
+      softMin: 190,
+      softMax: 250,
+      hardMin: 160,
+      hardMax: 320,
+      countingMode: "zh_chars",
+      normalizeMode: "expand",
+    });
+
+    const result = await agent.normalizeChapter({
+      chapterContent: draft,
+      lengthSpec,
+      reducedControlBlock: "本章没有任何测量仪器。禁止出现 OD值、mV、nm、量角器或肉眼无法获得的精度。",
+    });
+
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+    expect(result.normalizedContent).toBe(draft);
+    expect(result.applied).toBe(false);
+    expect(result.warning).toContain("forbidden term OD remains in output");
+  });
+
   it("rejects numeric-token overflow instead of accepting a polluted expansion", async () => {
     const agent = createAgent();
     const draft = "原始正文保持在安全范围内。".repeat(20);
