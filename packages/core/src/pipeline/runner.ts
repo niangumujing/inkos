@@ -3131,12 +3131,17 @@ ${matrix}`,
       writerCount < params.lengthSpec.hardMin
       && normalized.finalCount < params.lengthSpec.hardMin
     ) {
+      const firstPassCount = normalized.finalCount;
       normalized = await normalizer.normalizeChapter({
         chapterContent: params.chapterContent,
         lengthSpec: params.lengthSpec,
         chapterIntent: params.chapterIntent,
         reducedControlBlock: params.reducedControlBlock,
         safeExpansion: true,
+      });
+      this.logInfo(this.languageFromLengthSpec(params.lengthSpec), {
+        zh: `安全扩写回退：第${params.chapterNumber}章 ${firstPassCount} -> ${normalized.finalCount}${normalized.warning ? `（${normalized.warning}）` : ""}`,
+        en: `Safe expansion fallback for chapter ${params.chapterNumber}: ${firstPassCount} -> ${normalized.finalCount}${normalized.warning ? ` (${normalized.warning})` : ""}`,
       });
     }
 

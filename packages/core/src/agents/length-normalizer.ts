@@ -173,6 +173,7 @@ ${originalCount}
 
 ${intentBlock}${controlBlock}${input.safeExpansion ? `
 ## Safe Expansion Fallback
+这是一次有界的长度补偿，不是可选建议。必须输出至少达到 Hard Range 下限 ${input.lengthSpec.hardMin} 的完整正文；不要原样返回当前短正文。
 仅补足已有场景的对白、动作、空间过渡和可观察反应。不要改写既有事实，不要添加任何新的数字、单位、精度、器材、人物、势力、世界观解释、伏笔或内部标记。` : ""}
 ## Chapter Content
 ${input.chapterContent}`;
