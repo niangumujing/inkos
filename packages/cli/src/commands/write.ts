@@ -196,7 +196,7 @@ writeCommand
       // Remove from index (and all chapters after it)
       const index = await state.loadChapterIndex(bookId);
       const trimmed = index.filter((ch) => ch.number < chapter);
-      await state.saveChapterIndex(bookId, trimmed);
+      await state.saveChapterIndex(bookId, trimmed, { allowEmptyWithChapterFiles: true });
 
       // Also remove later chapter files since state will be rolled back
       const laterFiles = files.filter((f) => {

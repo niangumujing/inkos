@@ -419,10 +419,11 @@ describe("ContinuityAuditor", () => {
       "",
       "## 不要做",
       "不要写成大段打斗。",
+      "不要出现“灰痕”“焰纹”等能力名称；只写“指尖发烫”等可观察反应。",
     ].join("\n");
 
     try {
-      await auditor.auditChapter(bookDir, "Chapter body.", 42, "xuanhuan", {
+      const result = await auditor.auditChapter(bookDir, "他启用了灰痕。", 42, "xuanhuan", {
         chapterMemo: {
           chapter: 42,
           goal: "陆焚抢回残刃并离开",
@@ -449,10 +450,290 @@ describe("ContinuityAuditor", () => {
       expect(userPrompt).toContain("## 章节备忘（用于 memo 偏离检测）");
       expect(userPrompt).toContain("goal：陆焚抢回残刃并离开");
       expect(userPrompt).toContain("## 章尾必须发生的改变");
+      expect(userPrompt).toContain("## 强制章末契约核对");
+      expect(userPrompt).toContain("不得未经逐条核验就概括为“完全兑现”");
+      expect(userPrompt).toContain("不要写成大段打斗。");
+      expect(result.passed).toBe(false);
+      expect(result.issues).toContainEqual(expect.objectContaining({
+        severity: "critical",
+        category: "章节备忘契约",
+        description: expect.stringContaining("灰痕×1"),
+      }));
       // Legacy volume-outline block is gone.
       expect(userPrompt).not.toContain("## 卷纲");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("does not treat an explanation ban as a literal-term ban", () => {
+    const explanationAuditor = new ContinuityAuditor({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-explanation-contract-test",
+    });
+
+    const issues = (explanationAuditor as any).detectLiteralMemoContractViolations(
+      "## 不要做\n不要解释“临-07”含义，只测量并记录。",
+      "铁牌正面蚀刻临-07。",
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
+  });
+
+  it("does not treat an allowed naming clause as a literal ban", () => {
+    const contractAuditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-allowed-name-test",
+    });
+
+    const issues = (contractAuditor as any).detectLiteralMemoContractViolations(
+      "## 不要做\n- 不得提前使用“灰痕”“烬刻”“天炉”等术语，税票只能叫“记忆税票”，钟楼只能叫“钟楼”",
+      "远处钟楼传来第七声钟响。",
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
+  });
+
+  it("extracts unquoted forbidden terms and catches unit subscript variants", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-forbidden-list-test",
+    });
+
+    const issues = (auditor as any).detectLiteralMemoContractViolations(
+      "## 不要做\n不要量角器、OD、mV。",
+      "她拿起量角器，记录 OD₅₄₀，再用 127mV 标记读数。",
+      "zh",
+    );
+
+    expect(issues[0]).toMatchObject({
+      severity: "critical",
+      category: "章节备忘契约",
+    });
+    expect(issues[0]?.description).toContain("量角器×1");
+    expect(issues[0]?.description).toContain("OD×1");
+    expect(issues[0]?.description).toContain("mV×1");
+  });
+
+  it("drops unsupported memo requirement claims and neutralizes forbidden suggestions", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-evidence-boundary-test",
+    });
+    const memo = {
+      chapter: 2,
+      goal: "拿回残刃并离开",
+      isGoldenOpening: false,
+      body: "## 当前任务\n拿回残刃并离开。\n\n## 不要做\n不要量角器、OD、mV。",
+      threadRefs: [],
+    };
+
+    const issues = (auditor as any).sanitizeModelAuditIssues(
+      [
+        {
+          severity: "warning",
+          category: "章节备忘偏离",
+          description: "银线应在第3章显影，但正文没有写出。",
+          suggestion: "加入银线第3章显影，并使用量角器、OD、mV复核。",
+        },
+        {
+          severity: "warning",
+          category: "数值检查",
+          description: "正文出现了无法解释的测量表达。",
+          suggestion: "加入量角器、OD、mV复核。",
+        },
+      ],
+      memo,
+      "zh",
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.description).toContain("无法解释");
+    expect(issues[0]?.suggestion).toBe("仅依据正文中已经出现的可观察事实修复，不引入章节备忘明确禁止的术语、器材或单位。");
+    expect(issues[0]?.suggestion).not.toMatch(/量角器|OD|mV/u);
+  });
+
+  it("uses persisted original chapter instructions as contract evidence", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-persisted-guidance-test",
+    });
+    const body = [
+      "## 当前任务",
+      "验证税票。",
+      "",
+      "## 不要做",
+      "不要提前解释真相。",
+      "",
+      "## 用户原始章节指导（逐条强制遵守）",
+      "- 本章没有任何测量仪器。禁止出现量角器、OD值、mV。",
+    ].join("\n");
+
+    const contractIssues = (auditor as any).detectLiteralMemoContractViolations(
+      body,
+      "他拿起量角器，记录OD₅₄₀与mV读数。",
+      "zh",
+    );
+    const sanitized = (auditor as any).sanitizeModelAuditIssues(
+      [{
+        severity: "warning",
+        category: "数值检查",
+        description: "正文测量方式不可信。",
+        suggestion: "加入量角器、OD和127mV复核。",
+      }],
+      { chapter: 2, goal: "验证税票", isGoldenOpening: false, body, threadRefs: [] },
+      "zh",
+    );
+
+    expect(contractIssues[0]?.description).toContain("量角器×1");
+    expect(contractIssues[0]?.description).toContain("OD×1");
+    expect(contractIssues[0]?.description).toContain("mV×1");
+    expect(sanitized[0]?.suggestion).not.toMatch(/量角器|OD|mV/u);
+  });
+
+  it("lets persisted user guidance override a contradictory model ban", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-user-guidance-precedence-test",
+    });
+    const body = [
+      "## 不要做",
+      "- 不得含数字“十七”。",
+      "",
+      "## 用户原始章节指导（逐条强制遵守）",
+      "- 保留铜匣内壁十七道刻痕这一第1章已建立事实。",
+    ].join("\n");
+
+    const issues = (auditor as any).detectLiteralMemoContractViolations(
+      body,
+      "铜匣内壁十七道刻痕仍在。",
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
+  });
+
+  it("drops a fabricated quoted memo requirement despite incidental phrase overlap", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-fabricated-quote-test",
+    });
+    const memo = {
+      chapter: 2,
+      goal: "验证税票",
+      isGoldenOpening: false,
+      body: "## 当前任务\n验证税票。\n\n## 本章 hook 账\n第3章程十七买票。",
+      threadRefs: [],
+    };
+
+    const issues = (auditor as any).sanitizeModelAuditIssues(
+      [{
+        severity: "critical",
+        category: "章节备忘偏离",
+        description: "memo明确要求‘H001银线需留到第3章由程十七递来的验尸报告显影’，但正文提前出现。",
+        suggestion: "删除银线。",
+      }],
+      memo,
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
+  });
+
+  it("keeps memo claims that quote an actual requirement", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-supported-evidence-test",
+    });
+    const memo = {
+      chapter: 2,
+      goal: "拿回残刃并离开",
+      isGoldenOpening: false,
+      body: "## 章尾必须发生的改变\n陆焚拿回残刃并离开。",
+      threadRefs: [],
+    };
+    const issue = {
+      severity: "critical",
+      category: "章节备忘偏离",
+      description: "章节备忘要求“拿回残刃并离开”，但正文没有兑现。",
+      suggestion: "补足离开现场的动作。",
+    };
+
+    const issues = (auditor as any).sanitizeModelAuditIssues([issue], memo, "zh");
+
+    expect(issues).toEqual([issue]);
+  });
+
+  it("detects unquoted forbidden character introductions and planning markers", () => {
+    const contractAuditor = new ContinuityAuditor({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-planning-leak-test",
+    });
+    const chapter = "门外有人通报程十七求见。顾临川记下：NEW_H008已验。";
+
+    const contractIssues = (contractAuditor as any).detectLiteralMemoContractViolations(
+      "## 不要做\n- 不得引入程十七。",
+      chapter,
+      "zh",
+    );
+    const leakIssues = (contractAuditor as any).detectInternalPlanningLeaks(chapter, "zh");
+
+    expect(contractIssues[0]?.description).toContain("程十七×1");
+    expect(leakIssues[0]).toMatchObject({
+      severity: "critical",
+      category: "内部规划标记泄露",
+    });
   });
 });

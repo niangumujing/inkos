@@ -152,6 +152,38 @@ describe("PlannerAgent.planChapter memo generation", () => {
     expect(result.memo.body).toContain("## 当前任务");
   });
 
+  it("does not promote hidden role seed state into opening mustKeep", async () => {
+    const storyDir = join(bookDir, "story");
+    await writeFile(
+      join(storyDir, "current_state.md"),
+      [
+        "# 初始状态（第 0 章，由 roles + 种子伏笔派生）",
+        "",
+        "## 角色初始位置 / 处境",
+        "- 反派（主要）：正在核心区观察主角母亲的秘密信号。",
+        "- 巡检（主要）：袖中藏着尚未公开的伪造票据。",
+        "",
+        "## 种子伏笔（startChapter = 0）",
+        "- H001 · 物品 · 空匣内壁坐标仍待核验",
+      ].join("\n"),
+      "utf-8",
+    );
+    vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: validMemoRaw(1),
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+
+    const result = await makePlanner().planChapter({
+      book: makeBook(),
+      bookDir,
+      chapterNumber: 1,
+    });
+
+    expect(result.intent.mustKeep).toContain("H001 · 物品 · 空匣内壁坐标仍待核验");
+    expect(result.intent.mustKeep.join("\n")).not.toContain("母亲的秘密信号");
+    expect(result.intent.mustKeep.join("\n")).not.toContain("伪造票据");
+  });
+
   it("does not hard-cap memo generation below the configured model output budget", async () => {
     const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
       content: validMemoRaw(1),
@@ -176,7 +208,7 @@ describe("PlannerAgent.planChapter memo generation", () => {
       usage: ZERO_USAGE,
     } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
 
-    await makePlanner().planChapter({
+    const result = await makePlanner().planChapter({
       book: makeBook(),
       bookDir,
       chapterNumber: 1,
@@ -189,6 +221,9 @@ describe("PlannerAgent.planChapter memo generation", () => {
     expect(userMsg?.content).toContain("本章用户指令");
     expect(userMsg?.content).toContain("本章标题：雨夜账本");
     expect(userMsg?.content).toContain("当面对质");
+    expect(result.memo.body).toContain("## 用户原始章节指导（逐条强制遵守）");
+    expect(result.memo.body).toContain("本章标题：雨夜账本");
+    expect(result.intentMarkdown).toContain("必须围绕账本失窃后的当面对质展开");
   });
 
   it("retries when the first response is malformed and succeeds on retry", async () => {

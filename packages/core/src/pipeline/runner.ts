@@ -31,7 +31,7 @@ import type { RadarResult } from "../agents/radar.js";
 import type { LengthSpec, LengthTelemetry } from "../models/length-governance.js";
 import type { ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
 import type { ContextCompressionCallback } from "../models/context-compression.js";
-import { buildLengthSpec, countChapterLength, formatLengthCount, isOutsideHardRange, resolveLengthCountingMode, type LengthLanguage } from "../utils/length-metrics.js";
+import { buildLengthSpec, countChapterLength, formatLengthCount, isOutsideHardRange, isOutsideSoftRange, resolveLengthCountingMode, type LengthLanguage } from "../utils/length-metrics.js";
 import { analyzeLongSpanFatigue } from "../utils/long-span-fatigue.js";
 import { buildWritingMethodologySection } from "../utils/writing-methodology.js";
 import {
@@ -249,7 +249,7 @@ export function buildImportFoundationSource(
 
 /** Human-readable description of each manual-revision gate, surfaced in revisionDiagnostics. */
 const REVISION_GATE_STANDARDS: Record<RevisionGate, string> = {
-  strict: "A revision is applied only when blocking, critical, and AI-tell counts do not worsen, and at least blocking or AI-tell issues improve.",
+  strict: "A revision is applied only when no critical issues remain, blocking and AI-tell counts do not worsen, and at least blocking or AI-tell issues improve.",
   lenient: "A revision is applied whenever blocking, critical, and AI-tell counts do not worsen; no improvement is required (lenient gate).",
   always: "Manual revisions are always applied; audit counts are recorded for reference only (always gate).",
 };
@@ -269,8 +269,8 @@ export interface PipelineConfig {
   readonly chapterReviewMode?: "auto" | "manual";
   /**
    * Gate for applying manual revisions (default "strict"):
-   * - "strict": apply only when blocking/critical/AI-tell counts do not worsen
-   *   AND at least one of blocking or AI-tell improves.
+   * - "strict": apply only when no critical issues remain, blocking/AI-tell
+   *   counts do not worsen, and at least one of them improves.
    * - "lenient": apply whenever the counts do not worsen (no improvement required).
    * - "always": always apply; audit counts are recorded but never block.
    */
@@ -1109,6 +1109,7 @@ export class PipelineRunner {
         chapterContent: output.content,
         lengthSpec,
         chapterIntent: writeInput.chapterIntent,
+        reducedControlBlock: writeInput.externalContext,
       });
       totalUsage = PipelineRunner.addUsage(totalUsage, normalizedDraft.tokenUsage);
       const draftOutput: WriteChapterOutput = {
@@ -1267,6 +1268,7 @@ export class PipelineRunner {
       zh: `审计第${targetChapter}章`,
       en: `auditing chapter ${targetChapter}`,
     });
+    const persistedPlan = await loadPersistedPlan(bookDir, targetChapter);
     const evaluation = await this.evaluateMergedAudit({
       auditor,
       book,
@@ -1274,6 +1276,14 @@ export class PipelineRunner {
       chapterContent: content,
       chapterNumber: targetChapter,
       language,
+      ...(persistedPlan
+        ? {
+            auditOptions: {
+              chapterIntent: persistedPlan.intentMarkdown,
+              chapterMemo: persistedPlan.memo,
+            },
+          }
+        : {}),
     });
     const result = evaluation.auditResult;
 
@@ -1406,8 +1416,9 @@ export class PipelineRunner {
               contextPackage: reviseControlInput.composed.contextPackage,
               ruleStack: reviseControlInput.composed.ruleStack,
               lengthSpec,
+              externalContext: effectiveExternalContext,
             }
-          : { lengthSpec },
+          : { lengthSpec, externalContext: effectiveExternalContext },
       );
 
       if (reviseOutput.revisedContent.length === 0) {
@@ -1479,7 +1490,10 @@ export class PipelineRunner {
         ? true
         : revisionGate === "lenient"
           ? didNotWorsen
-          : didNotWorsen && (improvedBlocking || improvedAITells);
+          : effectivePostRevision.criticalCount === 0
+            && blockingDidNotWorsen
+            && aiDidNotWorsen
+            && (improvedBlocking || improvedAITells);
 
       if (!shouldApplyRevision) {
         const remainingIssues = effectivePostRevision.revisionBlockingIssues
@@ -1795,6 +1809,7 @@ export class PipelineRunner {
           chapterContent,
           lengthSpec,
           chapterIntent: writeInput.chapterIntent,
+          reducedControlBlock: writeInput.externalContext,
         }),
         normalizePostWriteSurface: (chapterContent) =>
           normalizePostWriteSurface(chapterContent, pipelineLang),
@@ -3078,6 +3093,7 @@ ${matrix}`,
     chapterContent: string;
     lengthSpec: LengthSpec;
     chapterIntent?: string;
+    reducedControlBlock?: string;
   }): Promise<{
     content: string;
     wordCount: number;
@@ -3103,6 +3119,7 @@ ${matrix}`,
       chapterContent: params.chapterContent,
       lengthSpec: params.lengthSpec,
       chapterIntent: params.chapterIntent,
+      reducedControlBlock: params.reducedControlBlock,
     });
 
     // Safety net: if normalizer output is less than 25% of original, it was too destructive.
@@ -3386,13 +3403,18 @@ ${matrix}`,
     finalCount: number,
     lengthSpec: LengthSpec,
   ): string[] {
-    if (!isOutsideHardRange(finalCount, lengthSpec)) {
+    if (!isOutsideSoftRange(finalCount, lengthSpec)) {
       return [];
     }
+    const outsideHardRange = isOutsideHardRange(finalCount, lengthSpec);
     return [
       this.localize(this.languageFromLengthSpec(lengthSpec), {
-        zh: `第${chapterNumber}章经过一次字数归一化后仍超出硬区间（${lengthSpec.hardMin}-${lengthSpec.hardMax}，实际 ${finalCount}）。`,
-        en: `Chapter ${chapterNumber} remains outside hard range (${lengthSpec.hardMin}-${lengthSpec.hardMax}, actual ${finalCount}) after a single normalization pass.`,
+        zh: outsideHardRange
+          ? `第${chapterNumber}章经过一次字数归一化后仍超出硬区间（${lengthSpec.hardMin}-${lengthSpec.hardMax}，实际 ${finalCount}）。`
+          : `第${chapterNumber}章超出建议字数区间（${lengthSpec.softMin}-${lengthSpec.softMax}，实际 ${finalCount}）。`,
+        en: outsideHardRange
+          ? `Chapter ${chapterNumber} remains outside hard range (${lengthSpec.hardMin}-${lengthSpec.hardMax}, actual ${finalCount}) after a single normalization pass.`
+          : `Chapter ${chapterNumber} is outside the recommended range (${lengthSpec.softMin}-${lengthSpec.softMax}, actual ${finalCount}).`,
       }),
     ];
   }

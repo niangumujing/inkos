@@ -1,7 +1,7 @@
 import { Command } from "commander";
-import { mkdir } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { log, logError } from "../utils.js";
+import { GLOBAL_ENV_PATH, log, logError } from "../utils.js";
 import { initializeProjectDirectory } from "../project-bootstrap.js";
 
 export const initCommand = new Command("init")
@@ -27,7 +27,8 @@ export const initCommand = new Command("init")
           "  inkos book create --title '我的小说' --genre xuanhuan --platform tomato",
           "  # English project? Re-run with: inkos init --lang en",
         ];
-      if (global) {
+      const hasGlobalConfig = await access(GLOBAL_ENV_PATH).then(() => true).catch(() => false);
+      if (hasGlobalConfig) {
         log("Global LLM config detected. Ready to go!");
         log("");
         log("Next steps:");

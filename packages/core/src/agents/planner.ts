@@ -130,7 +130,7 @@ export class PlannerAgent extends BaseAgent {
     });
 
     const isGoldenOpening = this.isGoldenOpeningChapter(input.book.language, input.chapterNumber);
-    const memo = await this.planChapterMemo({
+    const plannedMemo = await this.planChapterMemo({
       storyDir,
       bookDir: input.bookDir,
       chapterNumber: input.chapterNumber,
@@ -146,6 +146,11 @@ export class PlannerAgent extends BaseAgent {
       // for English books instead of always-Chinese.
       language: input.book.language ?? "zh",
     });
+    const memo = this.persistChapterContext(
+      plannedMemo,
+      input.externalContext,
+      input.book.language ?? "zh",
+    );
 
     // memo.goal is LLM-produced and specific (<=50 chars, validated).
     // Overwrite intent.goal so downstream composer/retrieval gets the
@@ -169,6 +174,24 @@ export class PlannerAgent extends BaseAgent {
       intentMarkdown,
       plannerInputs: materials.plannerInputs,
       runtimePath,
+    };
+  }
+
+
+  private persistChapterContext(
+    memo: ChapterMemo,
+    externalContext: string | undefined,
+    language: "zh" | "en",
+  ): ChapterMemo {
+    const context = externalContext?.trim();
+    if (!context) return memo;
+
+    const heading = language === "en"
+      ? "## Original Chapter Instructions (verbatim, mandatory)"
+      : "## 用户原始章节指导（逐条强制遵守）";
+    return {
+      ...memo,
+      body: `${memo.body.trim()}\n\n${heading}\n${context}`,
     };
   }
 
@@ -398,8 +421,14 @@ export class PlannerAgent extends BaseAgent {
   }
 
   private collectMustKeep(currentState: string, storyBible: string): string[] {
+    const stateSource = currentState.includes("# 初始状态（第 0 章")
+      ? this.extractSection(currentState, [
+        "种子伏笔（startChapter = 0）",
+        "Seed hooks (startChapter = 0)",
+      ]) ?? ""
+      : currentState;
     return this.unique([
-      ...this.extractListItems(currentState, 2),
+      ...this.extractListItems(stateSource, 2),
       ...this.extractListItems(storyBible, 2),
     ]).slice(0, 4);
   }

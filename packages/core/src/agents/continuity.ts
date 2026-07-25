@@ -40,6 +40,16 @@ export interface AuditIssue {
 
 type PromptLanguage = "zh" | "en";
 
+const GENERIC_MEASUREMENT_INSTRUMENT_TERMS = [
+  "红外热像仪",
+  "气压计",
+  "光谱仪",
+  "显微镜",
+  "统计模型",
+  "量角器",
+  "热敏电阻",
+];
+
 function normalizeRepairScope(value: unknown): AuditIssue["repairScope"] {
   if (value === "local" || value === "structural" || value === "unknown") return value;
   return undefined;
@@ -476,6 +486,13 @@ If the chapter memo, rule stack, or supplied context specifies content proportio
 
 For every issue, set repair_scope as a typed routing hint: "local" for wording, paragraph shape, small repetition, or narrow sentence-level fixes; "structural" for plot drift, timeline break, missing scene/payoff, character logic collapse, POV/knowledge boundary failure, or anything requiring a rewritten scene/chapter; "unknown" only when you genuinely cannot decide.
 
+Evidence discipline:
+- Never invent a missing chapter memo, prior scene, subplot appearance, or chapter count. If a source block is absent, say it is unavailable and do not infer its contents.
+- Claims such as "连续 N 章" or "最近 N 章" are allowed only when the supplied chapter summaries or full chapter texts contain at least N distinct chapters.
+- When a Chapter Memo is supplied, check its explicit "Do not / 不要做" rules one by one. A direct violation is at least warning severity, and becomes critical when it causes POV leakage, premature revelation, broken continuity, or a missing required scene/payoff.
+- If an issue says the memo requires something, quote an exact phrase that exists in the supplied memo. If you cannot quote it, omit that claim.
+- Never recommend adding any term, instrument, unit, character, reveal, or plot element prohibited by the memo. Keep suggestions inside the memo's allowed observable language.
+
 Audit dimensions:
 ${dimList}
 
@@ -517,6 +534,11 @@ Score holistically — do not let a single minor issue tank the score.`
 如果章节备忘、规则栈或输入上下文明确指定多条剧情线的比例（权谋/感情、事业/恋爱、案件/人物等），要审它们是否真正落成了场景、对话、行动或关系变化。只用一句总结带过的线，视为缺失。只有当 memo 明确要求本章必须推进该线时，才标 critical。
 
 每条 issue 必须给 repair_scope 作为 typed 路由提示："local" 表示措辞、段落形状、小重复、句段级小修；"structural" 表示主线偏离、时间线断裂、场面/回报缺失、人物逻辑崩、视角/信息边界失败，或任何需要重写场景/整章的问题；只有确实无法判断时才写 "unknown"。
+
+证据纪律：
+- 不得编造章节备忘、前文场面、支线出场或章节数量；来源缺失时只能说明不可用，不得自行补全。
+- 如果 issue 声称“memo 要求某事”，description 必须逐字引用当前输入 memo 中真实存在的短语；无法引用就删除这条声称。
+- 必须逐条检查“不要做”，且 suggestion 绝不能建议加入 memo 明确禁止的术语、器材、单位、角色、揭示或剧情元素，只能在 memo 允许的可观察表达内修复。
 
 审查维度：
 ${dimList}
@@ -626,6 +648,14 @@ overall_score 评分校准：
         ? `\n## Previous Chapter Full Text (for transition checks)\n${previousChapter}\n`
         : `\n## 上一章全文（用于衔接检查）\n${previousChapter}\n`
       : "";
+    const memoContract = options?.chapterMemo
+      ? this.extractMemoContractText(options.chapterMemo.body)
+      : undefined;
+    const contractChecklistBlock = memoContract
+      ? isEnglish
+        ? `\n\n## Mandatory Final Contract Check\nCompare the chapter against every rule below immediately before producing JSON. Every direct violation must appear in issues; do not summarize compliance without checking each rule.\n${memoContract}`
+        : `\n\n## 强制章末契约核对\n在输出 JSON 前，逐条对照以下规则检查正文。任何直接违规都必须写入 issues；不得未经逐条核验就概括为“完全兑现”。\n${memoContract}`
+      : "";
 
     const userPrompt = isEnglish
       ? `Review chapter ${chapterNumber}.
@@ -636,7 +666,7 @@ ${ledgerBlock}
 ${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBlock}${summariesBlock}${canonBlock}${fanficCanonBlock}${reducedControlBlock}${memoBlock}${prevChapterBlock}${styleGuideBlock}
 
 ## Chapter Content Under Review
-${chapterContent}`
+${chapterContent}${contractChecklistBlock}`
       : `请审查第${chapterNumber}章。
 
 ## 当前状态卡
@@ -645,7 +675,7 @@ ${ledgerBlock}
 ${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBlock}${summariesBlock}${canonBlock}${fanficCanonBlock}${reducedControlBlock}${memoBlock}${prevChapterBlock}${styleGuideBlock}
 
 ## 待审章节内容
-${chapterContent}`;
+${chapterContent}${contractChecklistBlock}`;
 
     const chatMessages = [
       { role: "system" as const, content: systemPrompt },
@@ -659,7 +689,231 @@ ${chapterContent}`;
       : await this.chat(chatMessages, chatOptions);
 
     const result = this.parseAuditResult(response.content, resolvedLanguage);
-    return { ...result, tokenUsage: response.usage };
+    const contractIssues = options?.chapterMemo
+      ? this.detectLiteralMemoContractViolations(
+        options.chapterMemo.body,
+        chapterContent,
+        resolvedLanguage,
+      )
+      : [];
+    const planningLeakIssues = this.detectInternalPlanningLeaks(chapterContent, resolvedLanguage);
+    const modelIssues = this.sanitizeModelAuditIssues(
+      result.issues,
+      options?.chapterMemo,
+      resolvedLanguage,
+    );
+    const issues = [...contractIssues, ...planningLeakIssues, ...modelIssues];
+    return {
+      ...result,
+      passed: result.passed && !issues.some((issue) => issue.severity === "critical"),
+      issues,
+      tokenUsage: response.usage,
+    };
+  }
+
+  private extractMemoDoNot(body: string): string | undefined {
+    const match = body.match(/^##\s*(?:不要做|Do not)\s*\n([\s\S]*?)(?=\n##\s|(?![\s\S]))/im);
+    const section = match?.[1]?.trim();
+    return section && section.length > 0 ? section : undefined;
+  }
+
+  private extractPersistedChapterContext(body: string): string | undefined {
+    const match = body.match(
+      /^##\s*(?:用户原始章节指导（逐条强制遵守）|Original Chapter Instructions \(verbatim, mandatory\))\s*\n([\s\S]*?)(?=\n##\s|(?![\s\S]))/im,
+    );
+    const section = match?.[1]?.trim();
+    return section && section.length > 0 ? section : undefined;
+  }
+
+  private extractMemoContractText(body: string): string | undefined {
+    const sections = [
+      this.extractMemoDoNot(body),
+      this.extractPersistedChapterContext(body),
+    ].filter((section): section is string => Boolean(section));
+    return sections.length > 0 ? sections.join("\n") : undefined;
+  }
+
+  private extractMemoForbiddenTerms(memoBody: string): string[] {
+    // When the caller persisted one-off user guidance, it is the authoritative
+    // source for literal bans. Model-owned memo rules may hallucinate bans
+    // such as “不得含数字十七” that contradict the user's actual brief.
+    const persistedUserContext = this.extractPersistedChapterContext(memoBody);
+    const section = persistedUserContext ?? this.extractMemoDoNot(memoBody);
+    if (!section) return [];
+
+    const terms = new Set<string>();
+    const addTerms = (raw: string): void => {
+      for (const candidate of raw
+        .replace(/^(?:使用|出现|提及|写出|称为|叫作?|引入|加入|添加|描述为|只写|不要使用|不得使用|禁止使用|do not use|must not use)\s*/iu, "")
+        .split(/[、,，;；/|]|或/u)) {
+        const term = candidate
+          .replace(/^(?:如|例如|包括|such as|e\.g\.?)\s*/iu, "")
+          .replace(/等.*$/u, "")
+          .replace(/\b(?:terms?|words?)\b.*$/iu, "")
+          .replace(/值$/u, "")
+          .trim();
+        if (term.length >= 2 && term.length <= 24 && !/^(?:不要|不得|禁止|禁用|只|仅|可以|允许|应当|必须)$/u.test(term)) {
+          terms.add(term);
+        }
+      }
+    };
+
+    if (/(?:没有任何|无|不得使用|禁止使用)[^\n。；;]{0,12}(?:测量)?仪器/iu.test(section)) {
+      for (const term of GENERIC_MEASUREMENT_INSTRUMENT_TERMS) terms.add(term);
+    }
+
+    for (const line of section.split("\n")) {
+      const rule = line.replace(/^[-*]\s*/, "").trim();
+      const hasExplicitBanAction = /(?:不要|不得|禁止|禁用|do not|must not).*(?:出现|使用|提及|写出|称为|叫作?|引入|加入|添加|use|mention|name|call|describe|introduce)/iu.test(rule);
+      const hasDirectBanList = /(?:不要|不得|禁止|禁用|do not|must not)\s*[^。.!！？?；;\n]{2,}(?:、|,\s*|，\s*(?!只|允许|可以|应|必须))/iu.test(rule);
+      if (!hasExplicitBanAction && !hasDirectBanList) continue;
+      const permissionClause = rule.search(
+        /(?:；|;|，|,)\s*[^；;，,]{0,40}(?:只(?:能|可)|允许|可以|应(?:当)?|必须)\s*(?:叫|称为|使用|出现)|(?:;|,)\s*[^;,]{0,40}(?:may|can|must|should)\s+(?:be called|use|appear)/iu,
+      );
+      const forbiddenClause = permissionClause >= 0 ? rule.slice(0, permissionClause) : rule;
+
+      for (const match of forbiddenClause.matchAll(/[（(]([^）)]+)[）)]/gu)) addTerms(match[1] ?? "");
+      for (const match of forbiddenClause.matchAll(/[“”"'‘’`]([^“”"'‘’`]{2,24})[“”"'‘’`]/gu)) {
+        addTerms(match[1] ?? "");
+      }
+
+      // Also support explicit unquoted lists such as “不要量角器、OD、mV”.
+      const list = forbiddenClause.match(/(?:不要|不得|禁止|禁用|do not|must not)(?:使用|出现|提及|写出|称为|叫作?|引入|加入|添加)?\s*([^。.!！？?；;\n]+)/iu)?.[1];
+      if (list) addTerms(list);
+
+      const introducedEntity = rule.match(
+        /(?:不要|不得|禁止|禁用|do not|must not)\s*(?:提前)?(?:引入|introduce)\s*([\p{Script=Han}A-Za-z0-9_-]{2,24})/iu,
+      )?.[1];
+      if (introducedEntity) terms.add(introducedEntity);
+    }
+
+    return [...terms];
+  }
+
+  private countForbiddenTerm(text: string, term: string): number {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const asciiUnit = /^[A-Za-z][A-Za-z0-9_-]*$/u.test(term);
+    const pattern = asciiUnit
+      ? new RegExp(`(?<![A-Za-z])${escaped}(?:[_-]?[0-9₀-₉]+)?(?![A-Za-z])`, "giu")
+      : new RegExp(escaped, "gu");
+    return [...text.matchAll(pattern)].length;
+  }
+
+  private sanitizeModelAuditIssues(
+    issues: ReadonlyArray<AuditIssue>,
+    chapterMemo: ChapterMemo | undefined,
+    language: PromptLanguage,
+  ): AuditIssue[] {
+    const forbiddenTerms = chapterMemo ? this.extractMemoForbiddenTerms(chapterMemo.body) : [];
+    return issues
+      .filter((issue) => !this.isUnsupportedMemoClaim(issue, chapterMemo))
+      .map((issue) => {
+        const suggestionHasForbiddenTerm = forbiddenTerms.some(
+          (term) => this.countForbiddenTerm(issue.suggestion, term) > 0,
+        );
+        if (!suggestionHasForbiddenTerm) return issue;
+
+        return {
+          ...issue,
+          suggestion: language === "en"
+            ? "Repair only from observable facts already present in the chapter; do not introduce any term, instrument, or unit prohibited by the chapter memo."
+            : "仅依据正文中已经出现的可观察事实修复，不引入章节备忘明确禁止的术语、器材或单位。",
+        };
+      });
+  }
+
+  private isUnsupportedMemoClaim(
+    issue: AuditIssue,
+    chapterMemo: ChapterMemo | undefined,
+  ): boolean {
+    if (!chapterMemo) return false;
+    const text = issue.description;
+    const referencesMemo = /(?:章节备忘|备忘录|memo|chapter memo)/iu.test(text);
+    const memoDriftCategory = /(?:章节备忘偏离|chapter memo drift)/iu.test(issue.category);
+    if (!referencesMemo && !memoDriftCategory) return false;
+
+    const claim = text.match(
+      /(?:章节备忘|备忘录|memo|chapter memo)[^。.!！？?；;\n]{0,80}(?:要求|规定|明确|写明|指出|必须|应当|需要|requires?|mandates?|says?|must|should)[^。.!！？?；;\n]{0,120}/iu,
+    )?.[0] ?? text.match(
+      /(?:要求|规定|明确要求|requires?|mandates?|must|should)[^。.!！？?；;\n]{0,80}(?:章节备忘|备忘录|memo|chapter memo)[^。.!！？?；;\n]{0,100}/iu,
+    )?.[0] ?? (memoDriftCategory ? text : undefined);
+    if (!claim) return false;
+
+    const memoText = `${chapterMemo.goal}\n${chapterMemo.body}`;
+    const quotedEvidence = [...claim.matchAll(/[“”"'‘’`]([^“”"'‘’`]{2,80})[“”"'‘’`]/gu)]
+      .map((match) => match[1]!.trim())
+      .filter(Boolean);
+    if (quotedEvidence.length > 0) {
+      const normalizedMemo = memoText.replace(/\s+/gu, "");
+      const hasExactEvidence = quotedEvidence.some(
+        (quote) => normalizedMemo.includes(quote.replace(/\s+/gu, "")),
+      );
+      return !hasExactEvidence;
+    }
+
+    // A claim that attributes a requirement to the memo must carry wording
+    // traceable to that memo. Fabricated requirements such as “银线第3章显影”
+    // then fail closed instead of becoming actionable revision guidance.
+    const requirementContent = claim
+      .replace(/^.*?(?:要求|规定|明确(?:要求)?|写明|指出|必须|应当|需要|requires?|mandates?|says?|must|should)\s*/iu, "")
+      .replace(/^(?:本章|正文|the chapter|chapter)\s*/iu, "");
+    const hanRuns = requirementContent.match(/[\u4e00-\u9fff]{2,}/gu) ?? [];
+    const hanPhrases = hanRuns.flatMap((run) => {
+      const phrases = [run];
+      for (const size of [4, 3]) {
+        for (let i = 0; i <= run.length - size; i++) phrases.push(run.slice(i, i + size));
+      }
+      return phrases;
+    });
+    const candidatePhrases = [
+      ...hanPhrases,
+      ...(requirementContent.match(/[A-Za-z][A-Za-z0-9_-]{2,}/gu) ?? []),
+    ].filter((phrase) => !/^(?:本章|正文|内容|出现|写出|加入|使用|没有|必须|应当|需要|the|this|that|chapter|content|appear|include|use|with|from)$/iu.test(phrase));
+    return candidatePhrases.length > 0 && !candidatePhrases.some((phrase) => memoText.includes(phrase));
+  }
+
+  private detectLiteralMemoContractViolations(
+    memoBody: string,
+    chapterContent: string,
+    language: PromptLanguage,
+  ): AuditIssue[] {
+    const violations = this.extractMemoForbiddenTerms(memoBody)
+      .map((term) => ({ term, count: this.countForbiddenTerm(chapterContent, term) }))
+      .filter(({ count }) => count > 0);
+    if (violations.length === 0) return [];
+
+    const detail = violations.map(({ term, count }) => `${term}×${count}`).join("、");
+    return [{
+      severity: "critical",
+      category: language === "en" ? "Chapter memo contract" : "章节备忘契约",
+      description: language === "en"
+        ? `The chapter uses explicitly forbidden literal terms: ${detail}.`
+        : `正文使用了章节备忘明确禁用的字面术语：${detail}。`,
+      suggestion: language === "en"
+        ? "Remove or replace every forbidden literal term while preserving the intended observable behavior."
+        : "逐处删除或替换禁用术语，仅保留章节备忘允许的可观察表现。",
+      repairScope: "local",
+    }];
+  }
+
+  private detectInternalPlanningLeaks(
+    chapterContent: string,
+    language: PromptLanguage,
+  ): AuditIssue[] {
+    const markers = [...new Set(chapterContent.match(/\b(?:NEW_)?H\d{3,}\b/g) ?? [])];
+    if (markers.length === 0) return [];
+
+    return [{
+      severity: "critical",
+      category: language === "en" ? "Internal planning leak" : "内部规划标记泄露",
+      description: language === "en"
+        ? `The chapter exposes internal hook identifiers: ${markers.join(", ")}.`
+        : `正文泄露内部伏笔标识：${markers.join("、")}。`,
+      suggestion: language === "en"
+        ? "Remove internal identifiers while preserving the fictional event they refer to."
+        : "删除内部标识，仅保留其对应的故事事件。",
+      repairScope: "local",
+    }];
   }
 
   private parseAuditResult(content: string, language: PromptLanguage): AuditResult {
