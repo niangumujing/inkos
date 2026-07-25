@@ -709,7 +709,11 @@ ${chapterContent}${contractChecklistBlock}`;
       if (!/(?:不要|不得|禁止|禁用|do not|must not).*(?:出现|使用|提及|写出|称为|引入|use|mention|name|call|describe as|introduce)/i.test(rule)) {
         continue;
       }
-      const forbiddenClause = rule.split(/(?:；|;|，只|,\s*only)/i, 1)[0] ?? rule;
+      const permissionClause = rule.search(
+        /(?:；|;|，|,)\s*[^；;，,]{0,40}(?:只(?:能|可)|允许|可以|应(?:当)?|必须)\s*(?:叫|称为|使用|出现)|(?:;|,)\s*[^;,]{0,40}(?:may|can|must|should)\s+(?:be called|use|appear)/i,
+      );
+      const forbiddenClause = (permissionClause >= 0 ? rule.slice(0, permissionClause) : rule)
+        .split(/(?:；|;|，只|,\s*only)/i, 1)[0] ?? rule;
       for (const match of forbiddenClause.matchAll(/[（(]([^）)]+)[）)]/g)) {
         const termGroup = match[1]?.split(/[，,;]/, 1)[0] ?? "";
         for (const rawTerm of termGroup.split(/[/、|]/)) {

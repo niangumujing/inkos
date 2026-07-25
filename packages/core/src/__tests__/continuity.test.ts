@@ -492,6 +492,25 @@ describe("ContinuityAuditor", () => {
     expect(issues).toEqual([]);
   });
 
+  it("does not treat an allowed naming clause as a literal ban", () => {
+    const contractAuditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-allowed-name-test",
+    });
+
+    const issues = (contractAuditor as any).detectLiteralMemoContractViolations(
+      "## 不要做\n- 不得提前使用“灰痕”“烬刻”“天炉”等术语，税票只能叫“记忆税票”，钟楼只能叫“钟楼”",
+      "远处钟楼传来第七声钟响。",
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
+  });
+
   it("detects unquoted forbidden character introductions and planning markers", () => {
     const contractAuditor = new ContinuityAuditor({
       client: {

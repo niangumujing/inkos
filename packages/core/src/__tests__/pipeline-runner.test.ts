@@ -2034,7 +2034,9 @@ describe("PipelineRunner", () => {
   });
 
   it("normalizes revised output once before re-audit when it leaves the target band", async () => {
-    const { root, runner, bookId } = await createRunnerFixture();
+    const { root, runner, bookId } = await createRunnerFixture({
+      externalContext: "Keep the mentor conflict grounded and avoid forbidden instruments.",
+    });
     const overlongDraft = "修订后正文。".repeat(60);
     const normalizedDraft = "归一正文。".repeat(40);
 
@@ -2074,6 +2076,8 @@ describe("PipelineRunner", () => {
       expect(normalizeChapter).toHaveBeenCalled();
       expect(normalizeChapter.mock.calls[0]?.[0]).toMatchObject({
         chapterContent: overlongDraft,
+        chapterIntent: expect.stringContaining("# Chapter Intent"),
+        reducedControlBlock: expect.stringContaining("forbidden instruments"),
         lengthSpec: expect.objectContaining({
           target: 220,
         }),

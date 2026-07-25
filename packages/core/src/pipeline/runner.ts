@@ -1109,6 +1109,7 @@ export class PipelineRunner {
         chapterContent: output.content,
         lengthSpec,
         chapterIntent: writeInput.chapterIntent,
+        reducedControlBlock: writeInput.externalContext,
       });
       totalUsage = PipelineRunner.addUsage(totalUsage, normalizedDraft.tokenUsage);
       const draftOutput: WriteChapterOutput = {
@@ -1808,6 +1809,7 @@ export class PipelineRunner {
           chapterContent,
           lengthSpec,
           chapterIntent: writeInput.chapterIntent,
+          reducedControlBlock: writeInput.externalContext,
         }),
         normalizePostWriteSurface: (chapterContent) =>
           normalizePostWriteSurface(chapterContent, pipelineLang),
@@ -3091,6 +3093,7 @@ ${matrix}`,
     chapterContent: string;
     lengthSpec: LengthSpec;
     chapterIntent?: string;
+    reducedControlBlock?: string;
   }): Promise<{
     content: string;
     wordCount: number;
@@ -3116,6 +3119,7 @@ ${matrix}`,
       chapterContent: params.chapterContent,
       lengthSpec: params.lengthSpec,
       chapterIntent: params.chapterIntent,
+      reducedControlBlock: params.reducedControlBlock,
     });
 
     // Safety net: if normalizer output is less than 25% of original, it was too destructive.
