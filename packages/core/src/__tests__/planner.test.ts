@@ -208,7 +208,7 @@ describe("PlannerAgent.planChapter memo generation", () => {
       usage: ZERO_USAGE,
     } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
 
-    await makePlanner().planChapter({
+    const result = await makePlanner().planChapter({
       book: makeBook(),
       bookDir,
       chapterNumber: 1,
@@ -221,6 +221,9 @@ describe("PlannerAgent.planChapter memo generation", () => {
     expect(userMsg?.content).toContain("本章用户指令");
     expect(userMsg?.content).toContain("本章标题：雨夜账本");
     expect(userMsg?.content).toContain("当面对质");
+    expect(result.memo.body).toContain("## 用户原始章节指导（逐条强制遵守）");
+    expect(result.memo.body).toContain("本章标题：雨夜账本");
+    expect(result.intentMarkdown).toContain("必须围绕账本失窃后的当面对质展开");
   });
 
   it("retries when the first response is malformed and succeeds on retry", async () => {

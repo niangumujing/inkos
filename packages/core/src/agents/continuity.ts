@@ -40,6 +40,16 @@ export interface AuditIssue {
 
 type PromptLanguage = "zh" | "en";
 
+const GENERIC_MEASUREMENT_INSTRUMENT_TERMS = [
+  "红外热像仪",
+  "气压计",
+  "光谱仪",
+  "显微镜",
+  "统计模型",
+  "量角器",
+  "热敏电阻",
+];
+
 function normalizeRepairScope(value: unknown): AuditIssue["repairScope"] {
   if (value === "local" || value === "structural" || value === "unknown") return value;
   return undefined;
@@ -638,13 +648,13 @@ overall_score 评分校准：
         ? `\n## Previous Chapter Full Text (for transition checks)\n${previousChapter}\n`
         : `\n## 上一章全文（用于衔接检查）\n${previousChapter}\n`
       : "";
-    const memoDoNot = options?.chapterMemo
-      ? this.extractMemoDoNot(options.chapterMemo.body)
+    const memoContract = options?.chapterMemo
+      ? this.extractMemoContractText(options.chapterMemo.body)
       : undefined;
-    const contractChecklistBlock = memoDoNot
+    const contractChecklistBlock = memoContract
       ? isEnglish
-        ? `\n\n## Mandatory Final Contract Check\nCompare the chapter against every rule below immediately before producing JSON. Every direct violation must appear in issues; do not summarize compliance without checking each rule.\n${memoDoNot}`
-        : `\n\n## 强制章末契约核对\n在输出 JSON 前，逐条对照以下规则检查正文。任何直接违规都必须写入 issues；不得未经逐条核验就概括为“完全兑现”。\n${memoDoNot}`
+        ? `\n\n## Mandatory Final Contract Check\nCompare the chapter against every rule below immediately before producing JSON. Every direct violation must appear in issues; do not summarize compliance without checking each rule.\n${memoContract}`
+        : `\n\n## 强制章末契约核对\n在输出 JSON 前，逐条对照以下规则检查正文。任何直接违规都必须写入 issues；不得未经逐条核验就概括为“完全兑现”。\n${memoContract}`
       : "";
 
     const userPrompt = isEnglish
@@ -707,25 +717,46 @@ ${chapterContent}${contractChecklistBlock}`;
     return section && section.length > 0 ? section : undefined;
   }
 
+  private extractPersistedChapterContext(body: string): string | undefined {
+    const match = body.match(
+      /^##\s*(?:用户原始章节指导（逐条强制遵守）|Original Chapter Instructions \(verbatim, mandatory\))\s*\n([\s\S]*?)(?=\n##\s|(?![\s\S]))/im,
+    );
+    const section = match?.[1]?.trim();
+    return section && section.length > 0 ? section : undefined;
+  }
+
+  private extractMemoContractText(body: string): string | undefined {
+    const sections = [
+      this.extractMemoDoNot(body),
+      this.extractPersistedChapterContext(body),
+    ].filter((section): section is string => Boolean(section));
+    return sections.length > 0 ? sections.join("\n") : undefined;
+  }
+
   private extractMemoForbiddenTerms(memoBody: string): string[] {
-    const section = this.extractMemoDoNot(memoBody);
+    const section = this.extractMemoContractText(memoBody);
     if (!section) return [];
 
     const terms = new Set<string>();
     const addTerms = (raw: string): void => {
       for (const candidate of raw
         .replace(/^(?:使用|出现|提及|写出|称为|叫作?|引入|加入|添加|描述为|只写|不要使用|不得使用|禁止使用|do not use|must not use)\s*/iu, "")
-        .split(/[、,，;；/|]/u)) {
+        .split(/[、,，;；/|]|或/u)) {
         const term = candidate
           .replace(/^(?:如|例如|包括|such as|e\.g\.?)\s*/iu, "")
           .replace(/等.*$/u, "")
           .replace(/\b(?:terms?|words?)\b.*$/iu, "")
+          .replace(/值$/u, "")
           .trim();
         if (term.length >= 2 && term.length <= 24 && !/^(?:不要|不得|禁止|禁用|只|仅|可以|允许|应当|必须)$/u.test(term)) {
           terms.add(term);
         }
       }
     };
+
+    if (/(?:没有任何|无|不得使用|禁止使用)[^\n。；;]{0,12}(?:测量)?仪器/iu.test(section)) {
+      for (const term of GENERIC_MEASUREMENT_INSTRUMENT_TERMS) terms.add(term);
+    }
 
     for (const line of section.split("\n")) {
       const rule = line.replace(/^[-*]\s*/, "").trim();
@@ -759,7 +790,7 @@ ${chapterContent}${contractChecklistBlock}`;
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const asciiUnit = /^[A-Za-z][A-Za-z0-9_-]*$/u.test(term);
     const pattern = asciiUnit
-      ? new RegExp(`\\b${escaped}(?:[_-]?[0-9₀-₉]+)?\\b`, "giu")
+      ? new RegExp(`(?<![A-Za-z])${escaped}(?:[_-]?[0-9₀-₉]+)?(?![A-Za-z])`, "giu")
       : new RegExp(escaped, "gu");
     return [...text.matchAll(pattern)].length;
   }
@@ -808,7 +839,13 @@ ${chapterContent}${contractChecklistBlock}`;
     const quotedEvidence = [...claim.matchAll(/[“”"'‘’`]([^“”"'‘’`]{2,80})[“”"'‘’`]/gu)]
       .map((match) => match[1]!.trim())
       .filter(Boolean);
-    if (quotedEvidence.some((quote) => memoText.includes(quote))) return false;
+    if (quotedEvidence.length > 0) {
+      const normalizedMemo = memoText.replace(/\s+/gu, "");
+      const hasExactEvidence = quotedEvidence.some(
+        (quote) => normalizedMemo.includes(quote.replace(/\s+/gu, "")),
+      );
+      return !hasExactEvidence;
+    }
 
     // A claim that attributes a requirement to the memo must carry wording
     // traceable to that memo. Fabricated requirements such as “银线第3章显影”

@@ -523,7 +523,7 @@ describe("ContinuityAuditor", () => {
 
     const issues = (auditor as any).detectLiteralMemoContractViolations(
       "## 不要做\n不要量角器、OD、mV。",
-      "她拿起量角器，记录 OD₅₄₀，再用 mV 标记读数。",
+      "她拿起量角器，记录 OD₅₄₀，再用 127mV 标记读数。",
       "zh",
     );
 
@@ -576,6 +576,79 @@ describe("ContinuityAuditor", () => {
     expect(issues[0]?.description).toContain("无法解释");
     expect(issues[0]?.suggestion).toBe("仅依据正文中已经出现的可观察事实修复，不引入章节备忘明确禁止的术语、器材或单位。");
     expect(issues[0]?.suggestion).not.toMatch(/量角器|OD|mV/u);
+  });
+
+  it("uses persisted original chapter instructions as contract evidence", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-persisted-guidance-test",
+    });
+    const body = [
+      "## 当前任务",
+      "验证税票。",
+      "",
+      "## 不要做",
+      "不要提前解释真相。",
+      "",
+      "## 用户原始章节指导（逐条强制遵守）",
+      "- 本章没有任何测量仪器。禁止出现量角器、OD值、mV。",
+    ].join("\n");
+
+    const contractIssues = (auditor as any).detectLiteralMemoContractViolations(
+      body,
+      "他拿起量角器，记录OD₅₄₀与mV读数。",
+      "zh",
+    );
+    const sanitized = (auditor as any).sanitizeModelAuditIssues(
+      [{
+        severity: "warning",
+        category: "数值检查",
+        description: "正文测量方式不可信。",
+        suggestion: "加入量角器、OD和127mV复核。",
+      }],
+      { chapter: 2, goal: "验证税票", isGoldenOpening: false, body, threadRefs: [] },
+      "zh",
+    );
+
+    expect(contractIssues[0]?.description).toContain("量角器×1");
+    expect(contractIssues[0]?.description).toContain("OD×1");
+    expect(contractIssues[0]?.description).toContain("mV×1");
+    expect(sanitized[0]?.suggestion).not.toMatch(/量角器|OD|mV/u);
+  });
+
+  it("drops a fabricated quoted memo requirement despite incidental phrase overlap", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-fabricated-quote-test",
+    });
+    const memo = {
+      chapter: 2,
+      goal: "验证税票",
+      isGoldenOpening: false,
+      body: "## 当前任务\n验证税票。\n\n## 本章 hook 账\n第3章程十七买票。",
+      threadRefs: [],
+    };
+
+    const issues = (auditor as any).sanitizeModelAuditIssues(
+      [{
+        severity: "critical",
+        category: "章节备忘偏离",
+        description: "memo明确要求‘H001银线需留到第3章由程十七递来的验尸报告显影’，但正文提前出现。",
+        suggestion: "删除银线。",
+      }],
+      memo,
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
   });
 
   it("keeps memo claims that quote an actual requirement", () => {
