@@ -568,6 +568,13 @@ describe("ContinuityAuditor", () => {
     ]);
   });
 
+  it("keeps model-only OOC and hook criticals advisory even when user guidance exists", () => {
+    const auditor = new ContinuityAuditor({ client: { provider: "openai", apiFormat: "chat", stream: false, defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} } }, model: "test-model", projectRoot: "/tmp/inkos-auditor-user-context-model-critical-test" });
+    const memo = { chapter: 3, goal: "完成赴约", isGoldenOpening: true, body: "## 用户原始章节指导（逐条强制遵守）\n- 删除主动回忆。\n\n## 不要做\n不要提前揭示身份。", threadRefs: [] };
+    const issues = (auditor as any).sanitizeModelAuditIssues([{ severity: "critical", category: "伏笔检查", description: "模型声称H002必须完成五维实体闭环。", suggestion: "补造精密测量。" }], memo, "zh");
+    expect(issues[0]).toMatchObject({ severity: "warning", category: "伏笔检查" });
+  });
+
   it("drops model explicit-ban claims unsupported by deterministic memo bans", () => {
     const auditor = new ContinuityAuditor({ client: { provider: "openai", apiFormat: "chat", stream: false, defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} } }, model: "test-model", projectRoot: "/tmp/inkos-auditor-explicit-ban-test" });
     const memo = { chapter: 1, goal: "修复录音", isGoldenOpening: true, body: "## 不要做\n不要出现手机短信（她用座机查电话，拨号音真实）。", threadRefs: [] };

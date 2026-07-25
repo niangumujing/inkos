@@ -832,11 +832,6 @@ ${chapterContent}${contractChecklistBlock}`;
   ): AuditIssue {
     if (issue.severity !== "critical") return issue;
     if (!/(?:OOC|伏笔检查|hook check|character consistency)/iu.test(issue.category)) return issue;
-    const persistedUserContext = chapterMemo
-      ? this.extractPersistedChapterContext(chapterMemo.body)
-      : undefined;
-    if (persistedUserContext) return issue;
-
     // OOC/hook verdicts produced only by the model are useful review signals,
     // but they are not deterministic contract failures. Models frequently
     // invent SOPs, chronology facts, or exact-literal payoff requirements.
