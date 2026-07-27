@@ -485,6 +485,25 @@ describe("ContinuityAuditor", () => {
     expect(issues).toEqual([]);
   });
 
+  it("does not treat em-dash measurement examples as literal-term bans", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-em-dash-permitted-evidence-test",
+    });
+
+    const issues = (auditor as any).detectLiteralMemoContractViolations(
+      "## 不要做\n不要出现任何非物理证据的“直觉判断”——顾临川所有结论必须来自可测量参数（簇长、角度、深度、温度梯度）。",
+      "他记录下结晶的角度和深度。",
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
+  });
+
   it("does not treat an explanation ban as a literal-term ban", () => {
     const explanationAuditor = new ContinuityAuditor({
       client: {

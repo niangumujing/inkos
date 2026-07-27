@@ -134,12 +134,12 @@ export function validatePostWrite(
     return validatePostWriteEnglish(content, genreProfile, bookRules);
   }
 
-  // 1. 硬性禁令: "不是…而是…" 句式
-  if (/不是[^，。！？\n]{0,30}[，,]?\s*而是/.test(content)) {
+  // 1. 硬性禁令: "不是A，而是B" / "不是A，是B" 句式
+  if (/不是[^，。！？\n]{0,30}[，,]?\s*(?:而是|是)/.test(content)) {
     violations.push({
       rule: "禁止句式",
       severity: "error",
-      description: "出现了「不是……而是……」句式",
+      description: "出现了「不是……而是……」或「不是A，是B」句式",
       suggestion: "改用直述句",
     });
   }

@@ -149,6 +149,13 @@ describe("validatePostWrite", () => {
     expect(findRule(result, "禁止句式")!.severity).toBe("error");
   });
 
+  it("detects '不是A，是B' pattern without 而", () => {
+    const content = "这不是勇气，是愚蠢。他知道这一点。";
+    const result = validatePostWrite(content, baseProfile, null);
+    expect(findRule(result, "禁止句式")).toBeDefined();
+    expect(findRule(result, "禁止句式")!.severity).toBe("error");
+  });
+
   it("detects dash '——'", () => {
     const content = "他走了过去——然后停下来。";
     const result = validatePostWrite(content, baseProfile, null);

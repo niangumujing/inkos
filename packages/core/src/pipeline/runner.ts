@@ -1269,6 +1269,7 @@ export class PipelineRunner {
       en: `auditing chapter ${targetChapter}`,
     });
     const persistedPlan = await loadPersistedPlan(bookDir, targetChapter);
+    const truthFileOverrides = await this.loadPreChapterAuditTruth(bookDir, targetChapter);
     const evaluation = await this.evaluateMergedAudit({
       auditor,
       book,
@@ -1276,14 +1277,15 @@ export class PipelineRunner {
       chapterContent: content,
       chapterNumber: targetChapter,
       language,
-      ...(persistedPlan
-        ? {
-            auditOptions: {
+      auditOptions: {
+        ...(persistedPlan
+          ? {
               chapterIntent: persistedPlan.intentMarkdown,
               chapterMemo: persistedPlan.memo,
-            },
-          }
-        : {}),
+            }
+          : {}),
+        truthFileOverrides,
+      },
     });
     const result = evaluation.auditResult;
 
@@ -1650,6 +1652,31 @@ export class PipelineRunner {
       ]);
 
     return { currentState, particleLedger, pendingHooks, storyBible, volumeOutline, bookRules };
+  }
+
+  private async loadPreChapterAuditTruth(
+    bookDir: string,
+    chapterNumber: number,
+  ): Promise<{
+    readonly currentState: string;
+    readonly ledger: string;
+    readonly hooks: string;
+  }> {
+    const snapshotDir = join(bookDir, "story", "snapshots", String(Math.max(0, chapterNumber - 1)));
+    const readSafe = async (filename: string): Promise<string> => {
+      try {
+        return await readFile(join(snapshotDir, filename), "utf-8");
+      } catch {
+        return "(文件不存在)";
+      }
+    };
+
+    const [currentState, ledger, hooks] = await Promise.all([
+      readSafe("current_state.md"),
+      readSafe("particle_ledger.md"),
+      readSafe("pending_hooks.md"),
+    ]);
+    return { currentState, ledger, hooks };
   }
 
   /** Get book status overview. */
@@ -2262,15 +2289,30 @@ export class PipelineRunner {
       readFile(join(storyDir, "pending_hooks.md"), "utf-8").catch(() => ""),
     ]);
 
+    const existingPlan = (this.config.inputGovernanceMode ?? "v2") === "legacy"
+      ? null
+      : await loadPersistedPlan(bookDir, targetChapter);
     const reducedControlInput = (this.config.inputGovernanceMode ?? "v2") === "legacy"
       ? undefined
       : await this.createGovernedArtifacts(
         book,
         bookDir,
         targetChapter,
-        this.config.externalContext,
+        existingPlan ? undefined : this.config.externalContext,
         { reuseExistingIntentWhenContextMissing: true },
       );
+    const syncGuidance = this.config.externalContext?.trim();
+    const settlementIntent = reducedControlInput
+      ? syncGuidance
+        ? [
+            reducedControlInput.plan.intentMarkdown,
+            pipelineLang === "en"
+              ? "## Sync Interpretation Guidance (temporary; do not replace the chapter contract)"
+              : "## 同步解释指导（临时使用；不得替换章节契约）",
+            syncGuidance,
+          ].join("\n\n")
+        : reducedControlInput.plan.intentMarkdown
+      : undefined;
 
     const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
     let syncedOutput = await writer.settleChapterState({
@@ -2279,7 +2321,7 @@ export class PipelineRunner {
       chapterNumber: targetChapter,
       title: targetMeta.title,
       content,
-      chapterIntent: reducedControlInput?.plan.intentMarkdown,
+      chapterIntent: settlementIntent,
       contextPackage: reducedControlInput?.composed.contextPackage,
       ruleStack: reducedControlInput?.composed.ruleStack,
       allowReapply: true,
@@ -2306,7 +2348,7 @@ export class PipelineRunner {
         content,
         reducedControlInput: reducedControlInput
           ? {
-              chapterIntent: reducedControlInput.plan.intentMarkdown,
+              chapterIntent: settlementIntent ?? reducedControlInput.plan.intentMarkdown,
               contextPackage: reducedControlInput.composed.contextPackage,
               ruleStack: reducedControlInput.composed.ruleStack,
             }

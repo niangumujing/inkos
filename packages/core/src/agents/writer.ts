@@ -276,6 +276,10 @@ export class WriterAgent extends BaseAgent {
         })();
 
     const creativeTemperature = input.temperatureOverride ?? 0.7;
+    const creativeMaxTokens = Math.min(
+      8192,
+      Math.max(2048, Math.ceil(resolvedLengthSpec.softMax * 1.5) + 768),
+    );
 
     this.logInfo(resolvedLanguage, {
       zh: `阶段 1：创作正文（第${chapterNumber}章）`,
@@ -287,7 +291,7 @@ export class WriterAgent extends BaseAgent {
         { role: "system", content: creativeSystemPrompt },
         { role: "user", content: creativeUserPrompt },
       ],
-      { temperature: creativeTemperature },
+      { temperature: creativeTemperature, maxTokens: creativeMaxTokens },
     );
     const creativeUsage = creativeResponse.usage;
 

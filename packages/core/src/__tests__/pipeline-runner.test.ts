@@ -22,7 +22,7 @@ import type { ChapterMeta } from "../models/chapter.js";
 import { MemoryDB } from "../state/memory-db.js";
 import * as memoryDbModule from "../state/memory-db.js";
 import { countChapterLength } from "../utils/length-metrics.js";
-import { savePersistedPlan } from "../pipeline/persisted-governed-plan.js";
+import { loadPersistedPlan, savePersistedPlan } from "../pipeline/persisted-governed-plan.js";
 
 const require = createRequire(import.meta.url);
 const hasNodeSqlite = (() => {
@@ -355,6 +355,8 @@ describe("PipelineRunner", () => {
     ].join("\n");
 
     await mkdir(runtimeDir, { recursive: true });
+    const snapshotDir = join(bookDir, "story", "snapshots", "0");
+    await mkdir(snapshotDir, { recursive: true });
     await writeFile(join(runtimeDir, "chapter-0001.intent.md"), intentMarkdown, "utf-8");
     await savePersistedPlan(bookDir, {
       intent: {
@@ -376,6 +378,14 @@ describe("PipelineRunner", () => {
       runtimePath: join(runtimeDir, "chapter-0001.intent.md"),
     });
     await writeFile(join(bookDir, "chapters", "0001_Test.md"), "# 第1章 测试\n\n正文。", "utf-8");
+    await Promise.all([
+      writeFile(join(bookDir, "story", "current_state.md"), "future live state", "utf-8"),
+      writeFile(join(bookDir, "story", "particle_ledger.md"), "future live ledger", "utf-8"),
+      writeFile(join(bookDir, "story", "pending_hooks.md"), "future live hooks", "utf-8"),
+      writeFile(join(snapshotDir, "current_state.md"), "snapshot zero state", "utf-8"),
+      writeFile(join(snapshotDir, "particle_ledger.md"), "snapshot zero ledger", "utf-8"),
+      writeFile(join(snapshotDir, "pending_hooks.md"), "snapshot zero hooks", "utf-8"),
+    ]);
     await state.saveChapterIndex(bookId, [{
       number: 1,
       title: "测试",
@@ -399,6 +409,11 @@ describe("PipelineRunner", () => {
           goal: "保留封印身份并取得门锁实证",
           body: expect.stringContaining("## 不要做"),
         }),
+        truthFileOverrides: {
+          currentState: "snapshot zero state",
+          ledger: "snapshot zero ledger",
+          hooks: "snapshot zero hooks",
+        },
       }));
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -3305,6 +3320,110 @@ describe("PipelineRunner", () => {
     expect(savedIndex[0]?.status).toBe("ready-for-review");
 
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("keeps the persisted chapter contract when sync has one-off guidance", async () => {
+    const originalContract = "Original rewrite contract: compare the stamped ledger to the ash mark.";
+    const syncGuidance = "Only use the edited body to reconstruct state; do not create new events.";
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "v2",
+      externalContext: syncGuidance,
+    });
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const runtimeDir = join(storyDir, "runtime");
+    const now = "2026-03-19T00:00:00.000Z";
+    const originalIntentMarkdown = `# Chapter Intent\n\n## Goal\n${originalContract}\n`;
+    const originalMemoBody = [
+      "## 当前任务",
+      originalContract,
+      "",
+      "## 读者此刻在等什么",
+      "读者等待账本上的印记被可靠保存，并成为下一步调查可以复核的证据。",
+      "",
+      "## 该兑现的 / 暂不掀的",
+      "兑现印记比对这一层证据，暂时不揭示抄写人身份和背后的具体动机。",
+      "",
+      "## 日常/过渡承担什么任务",
+      "用整理现场、封存纸页和收拢工具的动作承接后续调查，不额外制造新冲突。",
+      "",
+      "## 关键抉择过三连问",
+      "主角选择立刻封存证据而不追逐可疑身影，符合现有认知边界和谨慎行事习惯。",
+      "",
+      "## 章尾必须发生的改变",
+      "账本印记被妥善保存为后续能够复核的线索，主角也明确下一步要去查验来源。",
+      "",
+      "## 本章 hook 账",
+      "advance: 账本印记从偶然发现推进为可复核线索，并保留其来源不明的后续疑问。",
+      "",
+      "## 不要做",
+      "不要新造事件。",
+    ].join("\n");
+
+    await mkdir(runtimeDir, { recursive: true });
+    await Promise.all([
+      writeFile(join(storyDir, "current_state.md"), "stable state", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "stable hooks", "utf-8"),
+      writeFile(join(bookDir, "chapters", "0001_Test.md"), "# Chapter 1: Test\n\nEdited chapter body.", "utf-8"),
+      writeFile(join(runtimeDir, "chapter-0001.intent.md"), originalIntentMarkdown, "utf-8"),
+      state.saveChapterIndex(bookId, [{
+        number: 1,
+        title: "Test",
+        status: "ready-for-review",
+        wordCount: 18,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: [],
+        lengthWarnings: [],
+      }]),
+    ]);
+    await savePersistedPlan(bookDir, {
+      intent: {
+        chapter: 1,
+        goal: originalContract,
+        mustKeep: [],
+        mustAvoid: [],
+        styleEmphasis: [],
+      },
+      memo: {
+        chapter: 1,
+        goal: originalContract,
+        isGoldenOpening: false,
+        body: originalMemoBody,
+        threadRefs: [],
+      },
+      intentMarkdown: originalIntentMarkdown,
+      plannerInputs: [],
+      runtimePath: join(runtimeDir, "chapter-0001.intent.md"),
+    });
+    const settleSpy = vi.spyOn(
+      WriterAgent.prototype as unknown as {
+        settleChapterState: (input: Record<string, unknown>) => Promise<WriteChapterOutput>;
+      },
+      "settleChapterState",
+    ).mockResolvedValue(createWriterOutput({
+      chapterNumber: 1,
+      title: "Test",
+      content: "Edited chapter body.",
+      updatedState: "synced state",
+      updatedHooks: "synced hooks",
+      updatedLedger: "synced ledger",
+    }));
+    vi.spyOn(StateValidatorAgent.prototype, "validate").mockResolvedValue({ passed: true, warnings: [] });
+
+    try {
+      await runner.resyncChapterArtifacts(bookId, 1);
+
+      expect(settleSpy).toHaveBeenCalledWith(expect.objectContaining({
+        chapterIntent: expect.stringContaining(originalContract),
+      }));
+      expect(settleSpy.mock.calls[0]?.[0].chapterIntent).toContain(syncGuidance);
+      const persistedPlan = await loadPersistedPlan(bookDir, 1);
+      expect(persistedPlan?.intentMarkdown).toContain(originalContract);
+      expect(persistedPlan?.intentMarkdown).not.toContain(syncGuidance);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("still persists the chapter when the state validator appends markdown after a valid JSON verdict", async () => {

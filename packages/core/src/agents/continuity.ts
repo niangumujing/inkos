@@ -774,16 +774,17 @@ ${chapterContent}${contractChecklistBlock}`;
         /(?:；|;|，|,)\s*[^；;，,]{0,40}(?:只(?:能|可)|允许|可以|应(?:当)?|必须)\s*(?:叫|称为|使用|出现)|(?:;|,)\s*[^;,]{0,40}(?:may|can|must|should)\s+(?:be called|use|appear)/iu,
       );
       const forbiddenClause = permissionClause >= 0 ? rule.slice(0, permissionClause) : rule;
+      const literalClause = forbiddenClause.split(/[—–]/u, 1)[0] ?? forbiddenClause;
 
       // Parentheses in a “不要做” rule commonly explain the permitted
       // observable treatment (rather than spelling a banned literal). Only
       // quoted terms and explicit direct lists are safe sources of literal bans.
-      for (const match of forbiddenClause.matchAll(/[“”"'‘’`]([^“”"'‘’`]{2,24})[“”"'‘’`]/gu)) {
+      for (const match of literalClause.matchAll(/[“”"'‘’`]([^“”"'‘’`]{2,24})[“”"'‘’`]/gu)) {
         addTerms(match[1] ?? "");
       }
 
       // Also support explicit unquoted lists such as “不要量角器、OD、mV”.
-      const list = forbiddenClause.match(/(?:不要|不得|禁止|禁用|do not|must not)(?:使用|出现|提及|写出|称为|叫作?|引入|加入|添加)?\s*([^。.!！？?；;\n]+)/iu)?.[1];
+      const list = literalClause.match(/(?:不要|不得|禁止|禁用|do not|must not)(?:使用|出现|提及|写出|称为|叫作?|引入|加入|添加)?\s*([^。.!！？?；;\n]+)/iu)?.[1];
       if (list) addTerms(list);
 
       const introducedEntity = rule.match(
