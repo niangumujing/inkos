@@ -902,6 +902,69 @@ describe("PipelineRunner", () => {
     }
   });
 
+  it("composes from a reviewed plan without allowing new context to re-plan it", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "v2",
+    });
+    const approvedGoal = "Keep the approved alley investigation focused on the missing ledger.";
+
+    await Promise.all([
+      mkdir(join(state.bookDir(bookId), "story", "runtime"), { recursive: true }),
+      writeFile(
+        join(state.bookDir(bookId), "story", "runtime", "chapter-0001.intent.md"),
+        [
+          "# Chapter Intent",
+          "",
+          "## Goal",
+          approvedGoal,
+          "",
+          "## Must Keep",
+          "- The ledger remains unseen.",
+          "",
+          "## Must Avoid",
+          "- Do not name the mastermind.",
+          "",
+          "## Style Emphasis",
+          "- Keep the scene restrained.",
+          "",
+        ].join("\n"),
+        "utf-8",
+      ),
+    ]);
+
+    const planChapter = vi.spyOn(PlannerAgent.prototype, "planChapter");
+
+    try {
+      const result = await runner.composeChapter(
+        bookId,
+        "Replace the chapter with an unrelated battle.",
+        { requireExistingPlan: true },
+      );
+
+      expect(planChapter).not.toHaveBeenCalled();
+      expect(result.goal).toBe(approvedGoal);
+      await expect(readFile(join(state.bookDir(bookId), result.contextPath), "utf-8"))
+        .resolves.toContain(approvedGoal);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses approved-plan compose when no reviewed plan exists", async () => {
+    const { root, runner, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "v2",
+    });
+    const planChapter = vi.spyOn(PlannerAgent.prototype, "planChapter");
+
+    try {
+      await expect(runner.composeChapter(bookId, undefined, { requireExistingPlan: true }))
+        .rejects.toThrow("refusing to re-plan and overwrite reviewed chapter guidance");
+      expect(planChapter).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   sqliteIt("syncs current-state facts into memory.db after drafting a chapter", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
     const chapterOneState = createStateCard({
@@ -3293,6 +3356,67 @@ describe("PipelineRunner", () => {
     expect(result.nextChapter).toBe(5);
 
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("rebuilds existing chapter truth files without regenerating the foundation", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const now = "2026-03-19T00:00:00.000Z";
+    await state.saveChapterIndex(bookId, [
+      {
+        number: 1,
+        title: "旧章一",
+        status: "drafted",
+        wordCount: 10,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: [],
+        lengthWarnings: [],
+      },
+      {
+        number: 2,
+        title: "旧章二",
+        status: "drafted",
+        wordCount: 10,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: [],
+        lengthWarnings: [],
+      },
+    ]);
+    await writeFile(join(state.bookDir(bookId), "story", "story_bible.md"), "# Keep Foundation\n", "utf-8");
+    vi.spyOn(ArchitectAgent.prototype, "generateFoundationFromImport");
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockImplementation(async (input) =>
+      createAnalyzedOutput({
+        chapterNumber: input.chapterNumber,
+        title: input.chapterTitle ?? `Chapter ${input.chapterNumber}`,
+        content: input.chapterContent,
+        wordCount: input.chapterContent.length,
+      }),
+    );
+    vi.spyOn(WriterAgent.prototype, "saveChapter").mockResolvedValue(undefined);
+    vi.spyOn(WriterAgent.prototype, "saveNewTruthFiles").mockResolvedValue(undefined);
+
+    try {
+      const result = await runner.importChapters({
+        bookId,
+        rebuildState: true,
+        chapters: [
+          { title: "重放一", content: "第一章正文。" },
+          { title: "重放二", content: "第二章正文。" },
+        ],
+      });
+
+      expect(result).toMatchObject({ importedCount: 2, nextChapter: 3 });
+      expect(ArchitectAgent.prototype.generateFoundationFromImport).not.toHaveBeenCalled();
+      await expect(readFile(join(state.bookDir(bookId), "story", "story_bible.md"), "utf-8"))
+        .resolves.toContain("Keep Foundation");
+      await expect(state.loadChapterIndex(bookId)).resolves.toEqual([
+        expect.objectContaining({ number: 1, title: "重放一", status: "imported" }),
+        expect.objectContaining({ number: 2, title: "重放二", status: "imported" }),
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("preserves imported chapter body when the analyzer only returns truth-file updates", async () => {

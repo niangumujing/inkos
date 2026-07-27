@@ -64,6 +64,7 @@ importCommand
   .requiredOption("--from <path>", "Path to a text file (auto-split) or directory of .md/.txt files")
   .option("--split <regex>", "Custom regex for chapter splitting (single-file mode)")
   .option("--resume-from <n>", "Resume from chapter N (for interrupted imports)", parseInt)
+  .option("--rebuild-state", "Replay existing chapters to rebuild truth files without regenerating the foundation")
   .option("--series", "Treat as a new series (shared universe, independent story) instead of direct continuation")
   .option("--json", "Output JSON")
   .action(async (bookIdArg: string | undefined, opts) => {
@@ -76,10 +77,13 @@ importCommand
       const book = await state.loadBookConfig(bookId);
       const language = resolveCliLanguage(book.language);
       const existingChapterCount = (await state.getNextChapterNumber(bookId)) - 1;
-      if (existingChapterCount > 0 && !opts.resumeFrom) {
+      if (opts.rebuildState && opts.resumeFrom !== undefined) {
+        throw new Error("--rebuild-state cannot be combined with --resume-from");
+      }
+      if (existingChapterCount > 0 && !opts.resumeFrom && !opts.rebuildState) {
         throw new Error(
           `Book "${bookId}" already has ${existingChapterCount} chapter(s). ` +
-          `Use --resume-from <n> to append, or delete existing chapters first.`
+          `Use --resume-from <n> to append, --rebuild-state to reconstruct truth files, or delete existing chapters first.`
         );
       }
 
@@ -132,6 +136,7 @@ importCommand
         bookId,
         chapters,
         resumeFrom: opts.resumeFrom,
+        rebuildState: opts.rebuildState === true,
         importMode: opts.series ? "series" : "continuation",
       });
 

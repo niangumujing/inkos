@@ -53,6 +53,7 @@ import { persistChapterArtifacts } from "./chapter-persistence.js";
 import { runChapterReviewCycle } from "./chapter-review-cycle.js";
 import { validateChapterTruthPersistence } from "./chapter-truth-validation.js";
 import { loadPersistedPlan, relativeToBookDir, savePersistedPlan } from "./persisted-governed-plan.js";
+import { evaluateFactBoundary } from "../utils/fact-boundary.js";
 
 const SEQUENCE_LEVEL_CATEGORIES = new Set([
   "Pacing Monotony", "节奏单调",
@@ -328,6 +329,15 @@ export interface ComposeChapterResult extends PlanChapterResult {
   readonly tracePath: string;
 }
 
+export interface ComposeChapterOptions {
+  /**
+   * Compose only from an existing persisted plan. This is intended for a
+   * human-reviewed plan: a missing or invalid runtime plan is an error rather
+   * than permission to invoke the planner and replace it.
+   */
+  readonly requireExistingPlan?: boolean;
+}
+
 export interface ReviseResult {
   readonly chapterNumber: number;
   readonly wordCount: number;
@@ -391,6 +401,8 @@ export interface ImportChaptersInput {
   readonly bookId: string;
   readonly chapters: ReadonlyArray<{ readonly title: string; readonly content: string }>;
   readonly resumeFrom?: number;
+  /** Replay all chapters to rebuild truth files without regenerating the book foundation. */
+  readonly rebuildState?: boolean;
   /** "continuation" (default) = pick up where the text left off, no new spacetime.
    *  "series" = shared universe but independent new story, requires new spacetime. */
   readonly importMode?: "continuation" | "series";
@@ -1089,7 +1101,7 @@ export class PipelineRunner {
 
       const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
       this.logStage(stageLanguage, { zh: "撰写章节草稿", en: "writing chapter draft" });
-      const output = await writer.writeChapter({
+      let output = await writer.writeChapter({
         book,
         bookDir,
         chapterNumber,
@@ -1097,13 +1109,13 @@ export class PipelineRunner {
         lengthSpec,
         ...(wordCount ? { wordCountOverride: wordCount } : {}),
       });
-      const writerCount = countChapterLength(output.content, lengthSpec.countingMode);
+      let writerCount = countChapterLength(output.content, lengthSpec.countingMode);
       let totalUsage: TokenUsageSummary = output.tokenUsage ?? {
         promptTokens: 0,
         completionTokens: 0,
         totalTokens: 0,
       };
-      const normalizedDraft = await this.normalizeDraftLengthIfNeeded({
+      let normalizedDraft = await this.normalizeDraftLengthIfNeeded({
         bookId,
         chapterNumber,
         chapterContent: output.content,
@@ -1111,12 +1123,112 @@ export class PipelineRunner {
         chapterIntent: writeInput.chapterIntent,
       });
       totalUsage = PipelineRunner.addUsage(totalUsage, normalizedDraft.tokenUsage);
-      const draftOutput: WriteChapterOutput = {
+      let draftOutput: WriteChapterOutput = {
         ...output,
         content: normalizedDraft.content,
         wordCount: normalizedDraft.wordCount,
         tokenUsage: totalUsage,
       };
+      let factBoundaryIssues = evaluateFactBoundary(draftOutput.content, writeInput.chapterIntent);
+      if (factBoundaryIssues.length > 0) {
+        const rejectionFeedback = factBoundaryIssues.map((issue) => `- ${issue.description}`).join("\n");
+        this.logStage(stageLanguage, {
+          zh: `事实闸门拒绝第${chapterNumber}章草稿，按违规项重写一次`,
+          en: `fact boundary rejected chapter ${chapterNumber}; rewriting once with violations`,
+        });
+        output = await writer.writeChapter({
+          book,
+          bookDir,
+          chapterNumber,
+          ...writeInput,
+          chapterIntent: `${writeInput.chapterIntent ?? ""}\n\n## Fact Gate Rejection Feedback\nThe previous draft was rejected. Rewrite the entire chapter and do not include any of these items:\n${rejectionFeedback}`,
+          lengthSpec,
+          ...(wordCount ? { wordCountOverride: wordCount } : {}),
+        });
+        writerCount = countChapterLength(output.content, lengthSpec.countingMode);
+        totalUsage = PipelineRunner.addUsage(totalUsage, output.tokenUsage ?? {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+        });
+        normalizedDraft = await this.normalizeDraftLengthIfNeeded({
+          bookId,
+          chapterNumber,
+          chapterContent: output.content,
+          lengthSpec,
+          chapterIntent: writeInput.chapterIntent,
+        });
+        totalUsage = PipelineRunner.addUsage(totalUsage, normalizedDraft.tokenUsage);
+        draftOutput = {
+          ...output,
+          content: normalizedDraft.content,
+          wordCount: normalizedDraft.wordCount,
+          tokenUsage: totalUsage,
+        };
+        factBoundaryIssues = evaluateFactBoundary(draftOutput.content, writeInput.chapterIntent);
+        if (factBoundaryIssues.length > 0) {
+          this.logStage(stageLanguage, {
+            zh: `事实闸门再次拒绝第${chapterNumber}章，交由修订器定向清除违规细节`,
+            en: `fact boundary rejected chapter ${chapterNumber} again; revising violations in place`,
+          });
+          const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
+          const maxFactBoundaryRevisionAttempts = 3;
+          for (let attempt = 1; attempt <= maxFactBoundaryRevisionAttempts && factBoundaryIssues.length > 0; attempt += 1) {
+            if (attempt > 1) {
+              this.logStage(stageLanguage, {
+                zh: `事实闸门第${attempt}次定向修订第${chapterNumber}章`,
+                en: `fact boundary revision ${attempt} for chapter ${chapterNumber}`,
+              });
+            }
+            const revision = await reviser.reviseChapter(
+              bookDir,
+              draftOutput.content,
+              chapterNumber,
+              factBoundaryIssues,
+              "rework",
+              book.genre,
+              {
+                chapterIntent: `${writeInput.chapterIntent ?? ""}\n\n## Fact Gate Rejection Feedback\nRemove every listed violation without substituting new unapproved details.\n${factBoundaryIssues.map((issue) => `- ${issue.description}`).join("\n")}`,
+                chapterMemo: writeInput.chapterMemo,
+                chapterIntentData: writeInput.chapterIntentData,
+                contextPackage: writeInput.contextPackage,
+                ruleStack: writeInput.ruleStack,
+                lengthSpec,
+              },
+            );
+            totalUsage = PipelineRunner.addUsage(totalUsage, revision.tokenUsage);
+            output = {
+              ...output,
+              content: revision.revisedContent,
+              wordCount: revision.wordCount,
+              updatedState: revision.updatedState !== "(状态卡未更新)" ? revision.updatedState : output.updatedState,
+              updatedLedger: revision.updatedLedger !== "(账本未更新)" ? revision.updatedLedger : output.updatedLedger,
+              updatedHooks: revision.updatedHooks !== "(伏笔池未更新)" ? revision.updatedHooks : output.updatedHooks,
+            };
+            writerCount = countChapterLength(output.content, lengthSpec.countingMode);
+            normalizedDraft = await this.normalizeDraftLengthIfNeeded({
+              bookId,
+              chapterNumber,
+              chapterContent: output.content,
+              lengthSpec,
+              chapterIntent: writeInput.chapterIntent,
+            });
+            totalUsage = PipelineRunner.addUsage(totalUsage, normalizedDraft.tokenUsage);
+            draftOutput = {
+              ...output,
+              content: normalizedDraft.content,
+              wordCount: normalizedDraft.wordCount,
+              tokenUsage: totalUsage,
+            };
+            factBoundaryIssues = evaluateFactBoundary(draftOutput.content, writeInput.chapterIntent);
+          }
+          if (factBoundaryIssues.length > 0) {
+            throw new Error(
+              `Chapter ${chapterNumber} violated approved fact boundary after rewrite and revision: ${factBoundaryIssues.map((issue) => issue.description).join("; ")}`,
+            );
+          }
+        }
+      }
       const lengthWarnings = this.buildLengthWarnings(
         chapterNumber,
         draftOutput.wordCount,
@@ -1223,7 +1335,11 @@ export class PipelineRunner {
     };
   }
 
-  async composeChapter(bookId: string, context?: string): Promise<ComposeChapterResult> {
+  async composeChapter(
+    bookId: string,
+    context?: string,
+    options?: ComposeChapterOptions,
+  ): Promise<ComposeChapterResult> {
     await this.state.ensureControlDocuments(bookId);
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
@@ -1235,7 +1351,10 @@ export class PipelineRunner {
       bookDir,
       chapterNumber,
       context ?? this.config.externalContext,
-      { reuseExistingIntentWhenContextMissing: true },
+      {
+        reuseExistingIntentWhenContextMissing: true,
+        requireExistingPlan: options?.requireExistingPlan,
+      },
     );
 
     return {
@@ -1267,6 +1386,7 @@ export class PipelineRunner {
       zh: `审计第${targetChapter}章`,
       en: `auditing chapter ${targetChapter}`,
     });
+    const persistedPlan = await loadPersistedPlan(bookDir, targetChapter);
     const evaluation = await this.evaluateMergedAudit({
       auditor,
       book,
@@ -1274,6 +1394,7 @@ export class PipelineRunner {
       chapterContent: content,
       chapterNumber: targetChapter,
       language,
+      auditOptions: persistedPlan ? { chapterIntent: persistedPlan.intentMarkdown } : undefined,
     });
     const result = evaluation.auditResult;
 
@@ -2735,12 +2856,22 @@ ${matrix}`,
       const { profile: gp } = await this.loadGenreProfile(book.genre);
       const resolvedLanguage = book.language ?? gp.language;
 
-      const startFrom = input.resumeFrom ?? 1;
+      const rebuildState = input.rebuildState === true;
+      const startFrom = rebuildState ? 1 : (input.resumeFrom ?? 1);
 
       const log = this.config.logger?.child("import");
 
+      // Step 1: Rebuild truth files from existing chapters without replacing the foundation.
+      if (rebuildState) {
+        log?.info(this.localize(resolvedLanguage, {
+          zh: `步骤 1：重建 ${input.chapters.length} 章的长期状态...`,
+          en: `Step 1: Rebuilding long-term state from ${input.chapters.length} chapters...`,
+        }));
+        await this.resetImportReplayTruthFiles(bookDir, resolvedLanguage);
+        await this.state.saveChapterIndex(input.bookId, [], { allowEmptyWithChapterFiles: true });
+        await this.state.snapshotState(input.bookId, 0);
       // Step 1: Generate foundation on first run (not on resume)
-      if (startFrom === 1) {
+      } else if (startFrom === 1) {
         log?.info(this.localize(resolvedLanguage, {
           zh: `步骤 1：从 ${input.chapters.length} 章生成基础设定...`,
           en: `Step 1: Generating foundation from ${input.chapters.length} chapters...`,
@@ -3565,6 +3696,7 @@ ${matrix}`,
     );
     const aiTells = analyzeAITells(params.chapterContent, params.language);
     const sensitiveResult = analyzeSensitiveWords(params.chapterContent, undefined, params.language);
+    const factBoundaryIssues = evaluateFactBoundary(params.chapterContent, params.auditOptions?.chapterIntent);
     const longSpanFatigue = await analyzeLongSpanFatigue({
       bookDir: params.bookDir,
       chapterNumber: params.chapterNumber,
@@ -3576,6 +3708,7 @@ ${matrix}`,
       ...llmAudit.issues,
       ...aiTells.issues,
       ...sensitiveResult.issues,
+      ...factBoundaryIssues,
       ...longSpanFatigue.issues,
     ];
     // revisionBlockingIssues excludes long-span-fatigue issues by
@@ -3585,11 +3718,12 @@ ${matrix}`,
       ...llmAudit.issues,
       ...aiTells.issues,
       ...sensitiveResult.issues,
+      ...factBoundaryIssues,
     ];
 
     return {
       auditResult: {
-        passed: hasBlockedWords ? false : llmAudit.passed,
+        passed: (hasBlockedWords || factBoundaryIssues.length > 0) ? false : llmAudit.passed,
         issues,
         summary: llmAudit.summary,
         tokenUsage: llmAudit.tokenUsage,
@@ -3619,6 +3753,7 @@ ${matrix}`,
     externalContext?: string,
     options?: {
       readonly reuseExistingIntentWhenContextMissing?: boolean;
+      readonly requireExistingPlan?: boolean;
     },
   ): Promise<{
     plan: PlanChapterOutput;
@@ -3647,8 +3782,19 @@ ${matrix}`,
     externalContext?: string,
     options?: {
       readonly reuseExistingIntentWhenContextMissing?: boolean;
+      readonly requireExistingPlan?: boolean;
     },
   ): Promise<PlanChapterOutput> {
+    if (options?.requireExistingPlan) {
+      const persisted = await loadPersistedPlan(bookDir, chapterNumber);
+      if (persisted) return persisted;
+
+      const paddedChapter = String(chapterNumber).padStart(4, "0");
+      throw new Error(
+        `Approved-plan compose requires a valid story/runtime/chapter-${paddedChapter}.plan.md or .intent.md; refusing to re-plan and overwrite reviewed chapter guidance.`,
+      );
+    }
+
     if (
       options?.reuseExistingIntentWhenContextMissing &&
       (!externalContext || externalContext.trim().length === 0)

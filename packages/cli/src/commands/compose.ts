@@ -11,6 +11,7 @@ composeCommand
   .argument("[book-id]", "Book ID (auto-detected if only one book)")
   .option("--context <text>", "Chapter steering guidance")
   .option("--context-file <path>", "Read guidance from file")
+  .option("--approved-plan", "Require an existing reviewed runtime plan; never re-plan")
   .option("--json", "Output JSON")
   .option("-q, --quiet", "Suppress console output")
   .action(async (bookIdArg: string | undefined, opts) => {
@@ -28,7 +29,9 @@ composeCommand
         }),
       );
 
-      const result = await pipeline.composeChapter(bookId, context);
+      const result = await pipeline.composeChapter(bookId, context, {
+        requireExistingPlan: opts.approvedPlan === true,
+      });
 
       if (opts.json) {
         log(JSON.stringify(result, null, 2));

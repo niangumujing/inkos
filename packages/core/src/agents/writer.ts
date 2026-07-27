@@ -229,6 +229,7 @@ export class WriterAgent extends BaseAgent {
       ? this.buildGovernedUserPrompt({
           chapterNumber,
           chapterMemo: input.chapterMemo,
+          chapterIntent: input.chapterIntent,
           chapterIntentData: input.chapterIntentData,
           contextPackage: input.contextPackage,
           ruleStack: input.ruleStack,
@@ -869,6 +870,7 @@ ${lengthRequirementBlock}
   private buildGovernedUserPrompt(params: {
     readonly chapterNumber: number;
     readonly chapterMemo: ChapterMemo;
+    readonly chapterIntent?: string;
     readonly chapterIntentData?: ChapterIntent;
     readonly contextPackage: ContextPackage;
     readonly ruleStack: RuleStack;
@@ -879,6 +881,7 @@ ${lengthRequirementBlock}
     readonly selectedEvidenceBlock?: string;
   }): string {
     const language = params.language ?? "zh";
+    const factGated = params.chapterIntent?.includes("[FACT_GATE]") ?? false;
     // The user's steering docs (author_intent = long-term direction, current_focus =
     // short-term focus) must land as a prominent, binding block near the top — not
     // buried among generic "evidence" entries where the model treats them as optional.
@@ -889,7 +892,7 @@ ${lengthRequirementBlock}
     const otherEntries = params.contextPackage.selectedContext.filter((entry) =>
       !DIRECTION_SOURCES.has(entry.source),
     );
-    const contextSections = renderNarrativeSelectedContext(otherEntries, language);
+    const contextSections = factGated ? "" : renderNarrativeSelectedContext(otherEntries, language);
     const userDirectionBlock = directionEntries.length > 0
       ? (language === "en"
           ? `## User direction (overrides model defaults — must follow)\n${renderNarrativeSelectedContext(directionEntries, language)}\n`
@@ -904,11 +907,16 @@ ${lengthRequirementBlock}
     const varianceBlock = params.varianceBrief
       ? `\n${params.varianceBrief}\n`
       : "";
-    const selectedEvidenceBlock = params.selectedEvidenceBlock
+    const selectedEvidenceBlock = !factGated && params.selectedEvidenceBlock
       ? `\n${sanitizeNarrativeEvidenceBlock(params.selectedEvidenceBlock, language)}\n`
       : "";
     const chapterContextBlock = this.buildChapterContextBlock(params.externalContext, language);
     const briefNarrative = renderMemoAsNarrativeBlock(params.chapterMemo, params.chapterIntentData, language);
+    const factGateBlock = factGated
+      ? (language === "en"
+          ? `## Fact-gated chapter contract (highest priority)\n${params.chapterIntent}\n\nUse no fact, object, number, color, ability, history, or inference beyond this contract. The omitted context is intentionally unavailable and must not be reconstructed.\n`
+          : `## 事实闸门章节契约（最高优先级）\n${params.chapterIntent}\n\n除本契约明示内容外，不得补写任何事实、器物、数字、颜色、能力、前史或推断。未提供的上下文是有意隔离，不能自行补全。\n`)
+      : "";
 
     if (params.language === "en") {
       return `Write chapter ${params.chapterNumber}.
@@ -916,6 +924,7 @@ ${lengthRequirementBlock}
 ${chapterContextBlock}
 
 ${userDirectionBlock}
+${factGateBlock}
 ${briefNarrative}
 
 ## Selected Context
@@ -938,6 +947,7 @@ ${lengthRequirementBlock}
 ${chapterContextBlock}
 
 ${userDirectionBlock}
+${factGateBlock}
 ${briefNarrative}
 
 ## 已选上下文

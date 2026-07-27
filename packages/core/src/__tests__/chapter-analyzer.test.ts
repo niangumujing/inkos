@@ -183,6 +183,8 @@ describe("ChapterAnalyzerAgent", () => {
 
       const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
       expect(messages[0]?.content).toContain("ALL output MUST be in English");
+      expect(messages[0]?.content).toContain("Evidence first: only record details explicitly stated");
+      expect(messages[0]?.content).toContain("Never invent colors, objects, causes, relationships");
       expect(messages[1]?.content).toContain("Analyze chapter 1");
       expect(messages[1]?.content).toContain("## Chapter Content");
       expect(messages[1]?.content).toContain("## Current State");

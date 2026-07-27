@@ -32,6 +32,7 @@ export type OnStreamProgress = (progress: StreamProgress) => void;
 const INKOS_USER_AGENT = "InkOS/1.3.5";
 const UNKNOWN_MODEL_FALLBACK_MAX_TOKENS = 8192 * 3;
 const TRANSIENT_LLM_RETRIES = 2;
+const STREAM_IDLE_TIMEOUT_MS = 120_000;
 
 function isByteString(value: string): boolean {
   for (let i = 0; i < value.length; i++) {
@@ -549,7 +550,36 @@ function isTransientLLMTransportError(error: unknown): boolean {
     "socket hang up",
     "other side closed",
     "network socket disconnected",
+    "stream idle timeout",
   ].some((needle) => text.includes(needle));
+}
+
+async function readStreamChunkWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<{ readonly value: Uint8Array; readonly done: boolean }> {
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void reader.cancel().catch(() => undefined);
+  }, STREAM_IDLE_TIMEOUT_MS);
+
+  try {
+    const chunk = await reader.read();
+    if (timedOut) {
+      throw new Error(`LLM stream idle timeout after ${STREAM_IDLE_TIMEOUT_MS}ms`);
+    }
+    return {
+      value: chunk.value ?? new Uint8Array(),
+      done: chunk.done,
+    };
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(`LLM stream idle timeout after ${STREAM_IDLE_TIMEOUT_MS}ms`, { cause: error });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -637,6 +667,16 @@ async function abortableDelay(delayMs: number, signal?: AbortSignal): Promise<vo
 }
 
 function shouldUseNativeCustomTransport(client: LLMClient): boolean {
+  // Bailian's OpenAI-compatible endpoint accepts the native chat payload but
+  // is not fully compatible with pi-ai's transport for newer Qwen models.
+  // Keep the Anthropic application endpoint on its existing path.
+  if (
+    client.service === "bailian"
+    && client.provider === "openai"
+    && client._piModel?.baseUrl.includes("dashscope.aliyuncs.com/compatible-mode")
+  ) {
+    return true;
+  }
   if (client.service === "minimax" && client.provider === "openai") {
     return true;
   }
@@ -925,7 +965,7 @@ async function chatCompletionViaCustomAnthropicCompatible(
 
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const { value, done } = await readStreamChunkWithIdleTimeout(reader);
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const parsed = parseSseEvents(buffer);
@@ -1151,7 +1191,7 @@ async function chatCompletionViaCustomOpenAICompatible(
 
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const { value, done } = await readStreamChunkWithIdleTimeout(reader);
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const parsed = parseSseEvents(buffer);

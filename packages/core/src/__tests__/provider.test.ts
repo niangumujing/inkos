@@ -354,6 +354,35 @@ describe("chatCompletion via pi-ai", () => {
     vi.unstubAllGlobals();
   });
 
+  it("uses native fetch transport for Bailian OpenAI-compatible Qwen routes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "可用" } }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = makeClient(0.7, {
+      service: "bailian",
+      stream: false,
+      _piModel: {
+        ...MOCK_PI_MODEL,
+        provider: "openai",
+        baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      },
+    });
+    const result = await chatCompletion(client, "qwen3.7-plus", [{ role: "user", content: "ping" }]);
+
+    expect(result.content).toBe("可用");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(mockCompleteSimple).not.toHaveBeenCalled();
+    expect(mockStreamSimple).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
   it("rejects non-ASCII API keys before native custom fetch builds headers", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

@@ -232,6 +232,8 @@ You are not writing new prose. You are reading completed chapter text and updati
 1. Read the chapter carefully and extract all important facts.
 2. Update the existing tracking files incrementally rather than rebuilding them from scratch.
 3. Keep the output contract identical to the writer pipeline.
+4. Evidence first: only record details explicitly stated in CHAPTER_CONTENT or already present in the current tracking files. Never invent colors, objects, causes, relationships, future payoffs, off-page events, or character knowledge. When evidence is absent or ambiguous, omit the detail.
+5. Do not create, resolve, defer, or advance a hook unless the current chapter text explicitly supports that exact change. Do not turn a plausible inference into a fact.
 
 ## What To Extract
 
@@ -338,6 +340,8 @@ Updated character matrix (one ## section per character, bullet-list fields):
 1. 仔细阅读正文，提取所有关键信息
 2. 基于"当前追踪文件"做增量更新
 3. 输出格式与写作模块完全一致
+4. 证据优先：只能记录正文明确写出、或当前追踪文件已明确存在的细节。禁止编造颜色、物品、原因、关系、未来回收、场外事件或角色认知；证据不足或存在歧义时，宁可不写。
+5. 只有当本章正文明确支持某一伏笔的具体变化时，才能新建、推进、回收、延后或关闭该伏笔。禁止把合理推测写成既定事实。
 
 ## 分析维度
 

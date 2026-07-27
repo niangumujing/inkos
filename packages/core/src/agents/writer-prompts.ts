@@ -127,6 +127,7 @@ function buildGovernedInputContract(language: "zh" | "en", governed: boolean): s
 - 卷纲是默认规划，不是全局最高规则。
 - 当 runtime rule stack 明确记录了 L4 -> L3 的 active override 时，优先执行当前任务意图，再局部调整规划层。
 - 真正不能突破的只有硬护栏：世界设定、连续性事实、显式禁令。
+- 如果 chapter intent 中出现 [FACT_GATE] 行，它们是可执行的逐字禁令：禁止词、数字或颜色一旦命中即视为本章失败。不要用近义细节、补充道具或“更具体”的描写替代空白；在未授权处宁可留白、只写已有动作和感受。
 - 如果提供了 English Variance Brief，必须主动避开其中列出的高频短语、重复开头和重复结尾模式，并完成 scene obligation。
 - 如果提供了 Hook Debt 简报，里面包含每个伏笔种下时的**原始文本片段**。用这些原文来写延续或兑现场景——不是模糊地提一嘴，而是接着读者已经看到的具体承诺来写。
 - 如果显式 hook agenda 里出现了可回收目标，本章必须写出具体兑现片段，回答种子章节中读者的原始疑问。
